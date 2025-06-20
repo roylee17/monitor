@@ -1,0 +1,40 @@
+# Temporary and debugging
+tmp/
+.claude
+CLAUDE.md
+
+# Binaries
+bin/
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Testnet assets (contains generated validator keys)
+k8s/testnet/assets/
+k8s/testnet/keys-backup/
+k8s/testnet/generated/
