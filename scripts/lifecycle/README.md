@@ -66,14 +66,6 @@ This directory contains scripts for managing the lifecycle of consumer chains in
   ./monitor-phase.sh -c 0
   ```
 
-### Testing Scripts
-
-- **`test-consumer-lifecycle.sh`** - Automated test of the complete consumer chain lifecycle
-
-  ```bash
-  ./test-consumer-lifecycle.sh
-  ```
-
 ## Consumer Chain Phases
 
 Consumer chains in ICS v7 go through the following phases:
@@ -110,16 +102,6 @@ Consumer chains in ICS v7 go through the following phases:
 
 # Check specific consumer
 ./list-consumers.sh 0
-```
-
-### Complete Lifecycle Test
-
-```bash
-# Run automated test
-./test-consumer-lifecycle.sh
-
-# Or use Makefile
-make test-consumer-workflow
 ```
 
 ## Integration with Monitor

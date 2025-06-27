@@ -11,6 +11,7 @@ Common logging functions that provide consistent output formatting across all sc
 #### Available Functions
 
 **Basic Logging:**
+
 - `log_info` - Display informational messages
 - `log_error` - Display error messages (stderr)
 - `log_warn` - Display warning messages
@@ -21,12 +22,14 @@ Common logging functions that provide consistent output formatting across all sc
 - `log_progress` - Display progress messages with ⚙️
 
 **Formatting:**
+
 - `print_header` - Display section headers with borders
 - `print_subheader` - Display subsection headers
 - `print_item` - Display bulleted list items
 - `print_kv` - Display key-value pairs aligned
 
 **Utilities:**
+
 - `check_command` - Check if a command exists
 - `check_namespace` - Check if a Kubernetes namespace exists
 - `spinner` - Display a spinner for long operations
@@ -35,12 +38,14 @@ Common logging functions that provide consistent output formatting across all sc
 #### Color Variables
 
 All color variables are exported for use in scripts:
+
 - `COLOR_RED`, `COLOR_GREEN`, `COLOR_YELLOW`, `COLOR_BLUE`
 - `COLOR_MAGENTA`, `COLOR_CYAN`, `COLOR_GRAY`, `COLOR_RESET`
 
 #### Symbols
 
 Unicode symbols for better visual feedback:
+
 - `SYMBOL_CHECK` - ✅
 - `SYMBOL_CROSS` - ❌
 - `SYMBOL_WARN` - ⚠️

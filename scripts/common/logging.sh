@@ -161,7 +161,7 @@ print_kv() {
     [ "${RAW_OUTPUT}" = "true" ] && return
     local key="$1"
     local value="$2"
-    printf "  %-20s : %s\n" "$key" "$value"
+    echo -e "  $(printf "%-20s" "$key") : $value"
 }
 
 # Export all functions

@@ -1,0 +1,53 @@
+# Git files
+.git
+.gitignore
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
+testdata/
+coverage.out
+*.test
+
+# Build artifacts
+monitor
+build/
+dist/
+*.exe
+
+# Kubernetes manifests (not needed for build)
+k8s/
+
+# Scripts (not needed for runtime)
+scripts/
+Makefile
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.drone.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go workspace
+go.work
+go.work.sum

@@ -1,0 +1,175 @@
+# Default values for ics-validator
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Validator configuration
+validator:
+  # Name of the validator (used for resource naming)
+  name: validator
+  # Validator moniker (display name)
+  moniker: "ICS Validator"
+  # Index used for HD derivation if hdPath not specified
+  index: 0
+
+# Key management configuration
+keys:
+  # How keys are provided: "mnemonic", "explicit", or "existing-secret"
+  type: "mnemonic"
+  
+  # For type: "mnemonic"
+  mnemonic: ""
+  # HD path for key derivation (auto-calculated if empty)
+  hdPath: ""
+  
+  # For type: "explicit" (provide pre-generated keys)
+  validatorKey: ""
+  nodeKey: ""
+  
+  # For type: "existing-secret"
+  secretName: ""
+
+# Chain configuration
+chain:
+  # Chain ID
+  id: "provider-1"
+  # Binary name
+  binary: "interchain-security-pd"
+  # Container image
+  image: "ghcr.io/cosmos/interchain-security:v7.0.1"
+  
+  # Genesis configuration
+  genesis:
+    # How genesis is provided: "url", "inline", or "existing-configmap"
+    type: "url"
+    # For type: "url"
+    url: ""
+    # For type: "inline"
+    inline: ""
+    # For type: "existing-configmap"
+    configMapName: ""
+
+# Peer configuration
+peers:
+  # Persistent peers list
+  persistent: []
+  # Example:
+  # - "node-id@peer1.example.com:26656"
+  # - "node-id@peer2.example.com:26656"
+  
+  # Seeds list
+  seeds: []
+
+# Monitor configuration
+monitor:
+  # Enable/disable monitor deployment
+  enabled: true
+  # Monitor image
+  image: "ics-monitor:latest"
+  # Image pull policy
+  imagePullPolicy: "IfNotPresent"
+  # Provider endpoints for the monitor
+  providerEndpoints: []
+  # Example:
+  # - "provider1.example.com:26656"
+  # - "provider2.example.com:26656"
+
+# Service configuration
+service:
+  # Service type: ClusterIP, NodePort, or LoadBalancer
+  type: ClusterIP
+  # NodePort configuration (if type is NodePort)
+  nodePorts:
+    p2p: ""
+    rpc: ""
+    api: ""
+    grpc: ""
+    grpcWeb: ""
+
+# LoadBalancer configuration for consumer chain P2P gateway
+loadBalancer:
+  # Annotations for cloud-specific LoadBalancer configuration
+  annotations: {}
+    # AWS Network Load Balancer
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # 
+    # GCP Load Balancer
+    # cloud.google.com/load-balancer-type: "External"
+    # networking.gke.io/load-balancer-type: "External"
+    #
+    # Azure Load Balancer
+    # service.beta.kubernetes.io/azure-load-balancer-resource-group: "myResourceGroup"
+    #
+    # MetalLB (for bare metal/Kind)
+    # metallb.universe.tf/address-pool: "public-pool"
+  
+  # Static IP address (if available)
+  loadBalancerIP: ""
+  
+  # Source IP ranges allowed to access the LoadBalancer
+  loadBalancerSourceRanges: []
+  # - 10.0.0.0/8
+  # - 172.16.0.0/12
+
+# Resource limits and requests
+resources:
+  validator:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  monitor:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+# Storage configuration
+storage:
+  validator:
+    # Storage class name (leave empty for default)
+    storageClassName: ""
+    # Size of the persistent volume
+    size: 10Gi
+  monitor:
+    storageClassName: ""
+    size: 1Gi
+
+# Testnet-specific configuration
+testnet:
+  # Enable testnet mode (adjusts networking for Kind clusters)
+  enabled: false
+  # Running in Kind cluster
+  kindCluster: false
+  # Use host.docker.internal for cross-cluster communication
+  useDockerInternal: false
+  # External endpoints for multi-cluster setup
+  externalEndpoints: {}
+  # Example:
+  # alice: "host.docker.internal:26657"
+  # bob: "host.docker.internal:26658"
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+  # Service account name (auto-generated if empty)
+  serviceAccountName: ""
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsUser: 1000
+  runAsNonRoot: true
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+    - ALL

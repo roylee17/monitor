@@ -10,6 +10,7 @@ import (
 
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
+	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/cosmos/interchain-security-monitor/internal/config"
 	"github.com/cosmos/interchain-security-monitor/internal/selector"
 	"github.com/cosmos/interchain-security-monitor/internal/subnet"
@@ -18,11 +19,14 @@ import (
 
 // Service provides blockchain monitoring functionality
 type Service struct {
-	cfg       config.Config
-	logger    *slog.Logger
-	clientCtx client.Context
-	monitor   EventMonitor
-	processor *EventProcessor
+	cfg               config.Config
+	logger            *slog.Logger
+	clientCtx         client.Context
+	monitor           EventMonitor
+	processor         *EventProcessor
+	peerDiscovery     *subnet.PeerDiscovery
+	validatorRegistry *ValidatorRegistry
+	stakingClient     stakingtypes.QueryClient
 }
 
 // NewService creates a new monitor service
@@ -70,44 +74,63 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	// Create subnet manager with default paths (K8s deployment only)
 	workDir := "."
 	subnetdPath := "/usr/local/bin/interchain-security-cd"
-	hermesPath := "/usr/local/bin/hermes"
 
-	subnetManager, err := subnet.NewManager(logger, workDir, subnetdPath, hermesPath)
+	subnetManager, err := subnet.NewManager(logger, workDir, subnetdPath, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subnet manager: %w", err)
 	}
 
 	// Create K8s manager (required)
-	// Note: consumerNamespace is now a prefix - actual namespaces will be created per consumer chain
-	// Format: <prefix>-<chain-id>
-	// Example: alice-testchain5-0, bob-consumer-0-1234
-	consumerNamespace := cfg.ConsumerNamespace
-	if consumerNamespace == "" {
-		// Use validator name as namespace prefix
-		// In production, each validator would have their own cluster
-		if cfg.FromKey != "" {
-			consumerNamespace = cfg.FromKey
-		} else {
-			consumerNamespace = "consumer" // Default namespace prefix
-		}
-	}
+	// Since each validator has its own cluster, namespaces are just chain IDs
 	
 	consumerImage := cfg.ConsumerImage
 	if consumerImage == "" {
 		consumerImage = "ics-monitor:latest" // Default image - contains all ICS binaries
 	}
 	
-	k8sManager, err := subnet.NewK8sManager(subnetManager, logger, consumerNamespace, consumerImage, cfg.FromKey)
+	k8sManager, err := subnet.NewK8sManager(subnetManager, logger, consumerImage, cfg.FromKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create K8s manager: %w", err)
 	}
 	
-	// Setup deterministic peer discovery
-	deterministicPeerDiscovery := subnet.NewDeterministicPeerDiscovery(logger, cfg.FromKey)
-	k8sManager.SetDeterministicPeerDiscovery(deterministicPeerDiscovery)
+	// Setup peer discovery
+	peerDiscovery := subnet.NewPeerDiscovery(logger, cfg.FromKey)
 	
-	logger.Info("K8s manager created successfully with deterministic peer discovery", 
-		"namespace", consumerNamespace, 
+	// Set RPC client for peer discovery to query provider network info
+	peerDiscovery.SetRPCClient(rpcClient)
+	logger.Info("Peer discovery configured with provider RPC client")
+	
+	// Query validator endpoints from chain registry
+	validatorRegistry := NewValidatorRegistry(logger)
+	
+	// Create a staking query client
+	stakingQueryClient := stakingtypes.NewQueryClient(clientCtx)
+	
+	endpoints, err := validatorRegistry.GetValidatorEndpoints(context.Background(), stakingQueryClient)
+	if err != nil {
+		logger.Warn("Failed to query validator endpoints from chain", "error", err)
+		// Peer discovery will fail for validators not in the on-chain registry
+	} else {
+		// Convert to simple moniker->address map for peer discovery
+		monikerEndpoints := make(map[string]string)
+		for moniker, endpoint := range endpoints {
+			monikerEndpoints[moniker] = endpoint.Address
+		}
+		peerDiscovery.SetValidatorEndpoints(monikerEndpoints)
+		logger.Info("Loaded validator endpoints from chain registry", "count", len(monikerEndpoints))
+	}
+	
+	// Multi-cluster mode configuration
+	// In multi-cluster setup, each validator runs in its own cluster
+	// and peer discovery relies on the on-chain validator registry
+	if os.Getenv("MULTI_CLUSTER_MODE") == "true" {
+		logger.Info("Multi-cluster mode enabled - using on-chain validator registry for peer discovery")
+		peerDiscovery.SetGatewayMode(true) // This enables NodePort-based discovery
+	}
+	
+	k8sManager.SetPeerDiscovery(peerDiscovery)
+	
+	logger.Info("K8s manager created successfully with peer discovery", 
 		"image", consumerImage)
 
 	// Create transaction service - always use CLI-based due to SDK keyring issues
@@ -122,20 +145,22 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	logger.Info("Using Kubernetes-enabled consumer handler", "provider_endpoints", len(cfg.ProviderEndpoints))
 
 	handlers := []EventHandler{
-		NewDebugHandler(logger), // Add debug handler first to log ALL events
 		NewCCVHandler(logger, txService, consumerKeyStore, validatorSelector),
 		consumerHandler,
-		NewValidatorHandler(logger),
+		NewValidatorUpdateHandler(logger, peerDiscovery, validatorRegistry, stakingQueryClient),
 	}
 
 	processor := NewEventProcessor(handlers)
 
 	return &Service{
-		cfg:       cfg,
-		logger:    logger,
-		clientCtx: clientCtx,
-		monitor:   monitor,
-		processor: processor,
+		cfg:               cfg,
+		logger:            logger,
+		clientCtx:         clientCtx,
+		monitor:           monitor,
+		processor:         processor,
+		peerDiscovery:     peerDiscovery,
+		validatorRegistry: validatorRegistry,
+		stakingClient:     stakingQueryClient,
 	}, nil
 }
 
@@ -153,6 +178,9 @@ func (s *Service) StartMonitoring() error {
 		s.logger.Info("Shutdown signal received")
 		cancel()
 	}()
+
+	// Validator endpoint monitoring is now event-based via ValidatorUpdateHandler
+	// No need for polling since we listen to edit_validator events
 
 	s.logger.Info("Starting blockchain monitoring", "rpc_url", s.cfg.RPCURL)
 	return s.monitor.Start(ctx, s.processor)

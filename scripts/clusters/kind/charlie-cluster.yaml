@@ -1,0 +1,24 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: charlie-cluster
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30656
+    hostPort: 26676
+    protocol: TCP
+  - containerPort: 30657
+    hostPort: 26659
+    protocol: TCP
+  - containerPort: 31657
+    hostPort: 1319
+    protocol: TCP
+  - containerPort: 32090
+    hostPort: 9094
+    protocol: TCP
+  - containerPort: 32091
+    hostPort: 9095
+    protocol: TCP
+networking:
+  podSubnet: "10.246.0.0/16"
+  serviceSubnet: "10.98.0.0/12"

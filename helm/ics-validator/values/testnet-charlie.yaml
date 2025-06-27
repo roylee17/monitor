@@ -1,0 +1,28 @@
+# Values for Charlie validator in testnet
+validator:
+  name: charlie
+  moniker: "Charlie Validator"
+  index: 2
+
+# NodePort mappings for charlie
+service:
+  nodePorts:
+    p2p: 30656
+    rpc: 30657
+    api: 31317
+    grpc: 32090
+    grpcWeb: 32091
+
+# Provider endpoints for multi-cluster setup
+monitor:
+  providerEndpoints:
+    - "host.docker.internal:26657"
+    - "host.docker.internal:26658"
+    - "host.docker.internal:26659"
+
+# External endpoints for other validators
+testnet:
+  externalEndpoints:
+    alice: "host.docker.internal:26657"
+    bob: "host.docker.internal:26658"
+    charlie: "host.docker.internal:26659"

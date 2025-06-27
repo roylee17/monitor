@@ -35,6 +35,7 @@ go.work
 Thumbs.db
 
 # Testnet assets (contains generated validator keys)
-k8s/testnet/assets/
-k8s/testnet/keys-backup/
-k8s/testnet/generated/
+testnet/assets/
+testnet/keys-backup/
+bin/
+.metallb-ips

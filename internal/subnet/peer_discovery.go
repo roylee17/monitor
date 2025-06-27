@@ -1,194 +1,351 @@
 package subnet
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
+	"context"
 	"fmt"
 	"log/slog"
-	"net"
 	"strings"
-	"time"
+
+	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 )
 
-// PeerDiscovery handles stateless peer discovery for consumer chains
+// PeerDiscovery discovers peers using deterministic node IDs
 type PeerDiscovery struct {
-	logger            *slog.Logger
-	baseProviderPort  int32
-	portSpacing       int32
-	providerEndpoints []string // Provider validator endpoints
+	logger                *slog.Logger
+	nodeKeyGen            *NodeKeyGenerator
+	localValidatorMoniker string
+	useGateway            bool              // Whether to use gateway addresses for cross-cluster connectivity
+	rpcClient             *rpcclient.HTTP   // RPC client to query provider network info
+	validatorEndpoints    map[string]string // Map of validator moniker to registered P2P endpoint
 }
 
-// NewPeerDiscovery creates a new peer discovery instance
-func NewPeerDiscovery(logger *slog.Logger, providerEndpoints []string) *PeerDiscovery {
+// NewPeerDiscovery creates a new peer discovery service
+func NewPeerDiscovery(logger *slog.Logger, localValidatorMoniker string) *PeerDiscovery {
 	return &PeerDiscovery{
-		logger:            logger,
-		baseProviderPort:  26656, // Standard Cosmos P2P port
-		portSpacing:       10,    // Space between consumer chains
-		providerEndpoints: providerEndpoints,
+		logger:                logger,
+		nodeKeyGen:            NewNodeKeyGenerator(),
+		localValidatorMoniker: localValidatorMoniker,
+		validatorEndpoints:    make(map[string]string),
 	}
 }
 
-// GetConsumerP2PPort derives a deterministic P2P port for a consumer chain
-func (pd *PeerDiscovery) GetConsumerP2PPort(consumerID string) int32 {
-	hash := sha256.Sum256([]byte(consumerID))
-	offset := int32(binary.BigEndian.Uint32(hash[:4]) % 1000)
-	return pd.baseProviderPort + 100 + (offset * pd.portSpacing)
+// SetRPCClient sets the RPC client for querying provider network info
+func (d *PeerDiscovery) SetRPCClient(client *rpcclient.HTTP) {
+	d.rpcClient = client
 }
 
-// GetConsumerRPCPort derives the RPC port based on P2P port
-func (pd *PeerDiscovery) GetConsumerRPCPort(consumerID string) int32 {
-	return pd.GetConsumerP2PPort(consumerID) + 1
+// SetValidatorEndpoints sets the validator P2P endpoints from chain registry
+func (d *PeerDiscovery) SetValidatorEndpoints(endpoints map[string]string) {
+	d.validatorEndpoints = endpoints
+	d.logger.Info("Updated validator endpoints",
+		"count", len(endpoints))
 }
 
-// GetConsumerAPIPort derives the API port based on P2P port
-func (pd *PeerDiscovery) GetConsumerAPIPort(consumerID string) int32 {
-	return pd.GetConsumerP2PPort(consumerID) + 661 // Standard offset (1317 - 656)
+// GetValidatorEndpoints returns the current validator P2P endpoints
+func (d *PeerDiscovery) GetValidatorEndpoints() map[string]string {
+	// Return a copy to prevent external modifications
+	result := make(map[string]string)
+	for k, v := range d.validatorEndpoints {
+		result[k] = v
+	}
+	return result
 }
 
-// GetConsumerGRPCPort derives the gRPC port based on P2P port
-func (pd *PeerDiscovery) GetConsumerGRPCPort(consumerID string) int32 {
-	return pd.GetConsumerP2PPort(consumerID) + 3434 // Standard offset (9090 - 5656)
+// DiscoverPeersWithChainID discovers peers for a consumer chain using deterministic node IDs
+func (d *PeerDiscovery) DiscoverPeersWithChainID(ctx context.Context, consumerID string, chainID string, optedInValidators []string) ([]string, error) {
+	d.logger.Info("Discovering peers for consumer chain",
+		"consumer_id", consumerID,
+		"chain_id", chainID,
+		"opted_in_validators", len(optedInValidators))
+
+	// If we have an RPC client, query provider network info to get actual peer addresses
+	if d.rpcClient != nil {
+		return d.discoverPeersFromProviderNetwork(ctx, chainID, optedInValidators)
+	}
+
+	// Fall back to gateway discovery if enabled
+	if d.useGateway {
+		return d.DiscoverPeersWithGateway(ctx, consumerID, chainID, optedInValidators)
+	}
+
+	// Default to DNS-based discovery (single cluster mode)
+	return d.discoverPeersWithDNS(ctx, consumerID, chainID, optedInValidators)
 }
 
-// DiscoverConsumerPeers generates peer endpoints for a consumer chain
-func (pd *PeerDiscovery) DiscoverConsumerPeers(consumerID string, validatorSet []string) ([]string, error) {
-	p2pPort := pd.GetConsumerP2PPort(consumerID)
+// GetNodeKeyJSON returns the node key JSON for this validator
+func (d *PeerDiscovery) GetNodeKeyJSON(chainID string) ([]byte, error) {
+	return d.nodeKeyGen.GenerateNodeKeyJSON(d.localValidatorMoniker, chainID)
+}
+
+// SetGatewayMode configures peer discovery to use gateway addresses
+func (d *PeerDiscovery) SetGatewayMode(enabled bool) {
+	d.useGateway = enabled
+}
+
+
+// DiscoverPeersWithGateway discovers peers for a consumer chain using LoadBalancer addresses
+func (d *PeerDiscovery) DiscoverPeersWithGateway(ctx context.Context, consumerID string, chainID string, optedInValidators []string) ([]string, error) {
+	d.logger.Info("Discovering peers through LoadBalancer",
+		"consumer_id", consumerID,
+		"chain_id", chainID,
+		"opted_in_validators", len(optedInValidators))
+
 	var peers []string
-
-	// Testnet node IDs - in production these would be queried from validators
-	// These are the actual node IDs from the current testnet
-	testnetNodeIDs := map[string]string{
-		"alice":   "9cee33456402ff3370734a61c4f99c612e3c01a5",
-		"bob":     "650c9fac5a183cf4de2150a585bf008f21751a6d",
-		"charlie": "3121619381646547698f2f343e807f579cfe25c0",
-	}
-
-	for _, validator := range validatorSet {
-		// Find matching provider endpoint
-		providerEndpoint := pd.findProviderEndpoint(validator)
-		if providerEndpoint == "" {
-			pd.logger.Warn("No provider endpoint found for validator", "validator", validator)
+	
+	// Calculate the consumer chain's P2P port (not NodePort!)
+	consumerP2PPort := d.getConsumerP2PPort(chainID)
+	d.logger.Info("Calculated consumer P2P port",
+		"chain_id", chainID,
+		"p2p_port", consumerP2PPort)
+	
+	for _, validatorName := range optedInValidators {
+		// Skip self - we don't need to connect to our own gateway
+		if validatorName == d.localValidatorMoniker {
 			continue
 		}
 
-		// Extract host from provider endpoint
-		host := pd.extractHost(providerEndpoint)
-		if host == "" {
-			pd.logger.Warn("Could not extract host from endpoint", "endpoint", providerEndpoint)
+		// IMPORTANT: Only include validators that are actually running consumer chains
+		// In production, this should verify the validator has actually deployed
+		// For now, we trust the optedInValidators list is accurate
+		
+		// Calculate deterministic node ID
+		nodeID, err := d.nodeKeyGen.GetNodeID(validatorName, chainID)
+		if err != nil {
+			d.logger.Warn("Failed to calculate node ID",
+				"validator", validatorName,
+				"error", err)
 			continue
 		}
 
-		// Generate consumer peer endpoint with node ID for testnet
-		var consumerPeer string
-		if nodeID, exists := testnetNodeIDs[validator]; exists {
-			// Include node ID for proper peer format
-			consumerPeer = fmt.Sprintf("%s@%s:%d", nodeID, host, p2pPort)
-		} else {
-			// Fallback without node ID
-			consumerPeer = fmt.Sprintf("%s:%d", host, p2pPort)
-			pd.logger.Warn("No node ID found for validator, peer may not connect",
-				"validator", validator)
+		// Build peer address using LoadBalancer
+		var peer string
+		
+		// Check if we have an endpoint from the on-chain registry
+		endpoint, ok := d.validatorEndpoints[validatorName]
+		if !ok {
+			d.logger.Warn("No endpoint found in on-chain registry for validator",
+				"validator", validatorName)
+			continue
 		}
 		
-		peers = append(peers, consumerPeer)
+		// Extract host from endpoint (remove any existing port)
+		host := endpoint
+		// Find last colon to separate host:port
+		if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
+			host = endpoint[:idx]
+		}
 		
-		pd.logger.Info("Discovered consumer peer",
-			"validator", validator,
-			"consumerID", consumerID,
-			"peer", consumerPeer)
+		// Build peer address with consumer P2P port for LoadBalancer connection
+		peer = fmt.Sprintf("%s@%s:%d", nodeID, host, consumerP2PPort)
+
+		peers = append(peers, peer)
+		d.logger.Info("Added LoadBalancer peer",
+			"validator", validatorName,
+			"node_id", nodeID[:12]+"...",
+			"host", host,
+			"port", consumerP2PPort,
+			"peer", peer)
 	}
+
+	d.logger.Info("LoadBalancer peer discovery complete",
+		"chain_id", chainID,
+		"total_peers", len(peers))
 
 	return peers, nil
 }
 
-// ProbePeer checks if a peer endpoint is reachable
-func (pd *PeerDiscovery) ProbePeer(endpoint string, timeout time.Duration) bool {
-	conn, err := net.DialTimeout("tcp", endpoint, timeout)
+// getConsumerP2PPort calculates the P2P port for a consumer chain
+func (d *PeerDiscovery) getConsumerP2PPort(chainID string) int {
+	// Use the same calculation as CalculatePorts to ensure consistency
+	ports, err := CalculatePorts(chainID)
 	if err != nil {
-		return false
+		// Fallback to a default if calculation fails
+		d.logger.Warn("Failed to calculate ports, using default", "error", err)
+		return 26756 // BaseP2PPort + ConsumerOffset
 	}
-	conn.Close()
-	return true
+	return ports.P2P
 }
 
-// ProbeConsumerPeers checks which discovered peers are reachable
-func (pd *PeerDiscovery) ProbeConsumerPeers(peers []string) []string {
-	var reachable []string
-	timeout := 5 * time.Second
+// discoverPeersFromProviderNetwork queries the provider's network info and adapts it for consumer chains
+func (d *PeerDiscovery) discoverPeersFromProviderNetwork(ctx context.Context, chainID string, optedInValidators []string) ([]string, error) {
+	d.logger.Info("Discovering peers from provider network info")
 
-	for _, peer := range peers {
-		if pd.ProbePeer(peer, timeout) {
-			reachable = append(reachable, peer)
-			pd.logger.Info("Consumer peer is reachable", "peer", peer)
-		} else {
-			pd.logger.Warn("Consumer peer not reachable", "peer", peer)
+	// For multi-cluster setup, we need to use LoadBalancer addresses
+	// Each validator's consumer P2P port is exposed via LoadBalancer
+	if d.useGateway {
+		return d.DiscoverPeersWithGateway(ctx, "", chainID, optedInValidators)
+	}
+
+	// Query provider's network info
+	netInfo, err := d.rpcClient.NetInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query provider network info: %w", err)
+	}
+
+	// Calculate consumer P2P port
+	consumerP2PPort := d.getConsumerP2PPort(chainID)
+
+	// Build a map of opted-in validators for quick lookup
+	optedInMap := make(map[string]bool)
+	for _, validator := range optedInValidators {
+		optedInMap[validator] = true
+	}
+
+	var peers []string
+	processedValidators := make(map[string]bool)
+
+	// Process each peer from provider network
+	for _, peer := range netInfo.Peers {
+		// Extract moniker from peer info
+		moniker := peer.NodeInfo.Moniker
+		
+		// Skip if not opted in
+		if !optedInMap[moniker] {
+			continue
+		}
+
+		// Skip self
+		if moniker == d.localValidatorMoniker {
+			continue
+		}
+
+		// Skip if already processed (in case of duplicates)
+		if processedValidators[moniker] {
+			continue
+		}
+		processedValidators[moniker] = true
+
+		// Calculate deterministic node ID for consumer chain
+		consumerNodeID, err := d.nodeKeyGen.GetNodeID(moniker, chainID)
+		if err != nil {
+			d.logger.Warn("Failed to calculate consumer node ID",
+				"validator", moniker,
+				"error", err)
+			continue
+		}
+
+		// Extract host from remote address
+		// Remote address format is typically "tcp://host:port" or "host:port"
+		remoteAddr := peer.RemoteIP
+		
+		// Build consumer peer address using same host but consumer port
+		consumerPeer := fmt.Sprintf("%s@%s:%d", consumerNodeID, remoteAddr, consumerP2PPort)
+		peers = append(peers, consumerPeer)
+
+		d.logger.Info("Added consumer peer from provider network",
+			"validator", moniker,
+			"provider_node_id", peer.NodeInfo.ID()[:12]+"...",
+			"consumer_node_id", consumerNodeID[:12]+"...",
+			"host", remoteAddr,
+			"consumer_port", consumerP2PPort)
+	}
+
+	// Check if we found peers for all opted-in validators
+	for _, validator := range optedInValidators {
+		if validator != d.localValidatorMoniker && !processedValidators[validator] {
+			d.logger.Warn("Could not find provider peer info for opted-in validator",
+				"validator", validator)
 		}
 	}
 
-	return reachable
+	d.logger.Info("Provider network-based peer discovery complete",
+		"chain_id", chainID,
+		"total_peers", len(peers))
+
+	return peers, nil
 }
 
-// GetPersistentPeers formats peers for Cosmos SDK configuration
-func (pd *PeerDiscovery) GetPersistentPeers(consumerID string, nodeIDs map[string]string, peers []string) string {
-	var persistentPeers []string
+// discoverPeersWithNodePorts discovers peers using NodePort mappings for multi-cluster setup
+func (d *PeerDiscovery) discoverPeersWithNodePorts(ctx context.Context, chainID string, optedInValidators []string) ([]string, error) {
+	d.logger.Info("Discovering peers using validator registry endpoints",
+		"chain_id", chainID,
+		"opted_in_validators", len(optedInValidators))
 
-	for _, peer := range peers {
-		// Extract validator name from peer endpoint
-		validator := pd.getValidatorFromPeer(peer)
-		if nodeID, ok := nodeIDs[validator]; ok {
-			persistentPeer := fmt.Sprintf("%s@%s", nodeID, peer)
-			persistentPeers = append(persistentPeers, persistentPeer)
+	var peers []string
+	for _, validatorName := range optedInValidators {
+		// Skip self
+		if validatorName == d.localValidatorMoniker {
+			continue
 		}
-	}
 
-	return strings.Join(persistentPeers, ",")
-}
-
-// findProviderEndpoint finds the provider endpoint for a validator
-func (pd *PeerDiscovery) findProviderEndpoint(validator string) string {
-	for _, endpoint := range pd.providerEndpoints {
-		if strings.Contains(endpoint, validator) {
-			return endpoint
+		// Check validator registry
+		endpoint, ok := d.validatorEndpoints[validatorName]
+		if !ok {
+			d.logger.Error("No endpoint found for validator in on-chain registry",
+				"validator", validatorName,
+				"registry_endpoints", len(d.validatorEndpoints))
+			continue
 		}
+
+		// Extract host from endpoint (remove any existing port)
+		hostAddr := endpoint
+		if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
+			hostAddr = endpoint[:idx]
+		}
+
+		// Calculate deterministic node ID for consumer chain
+		consumerNodeID, err := d.nodeKeyGen.GetNodeID(validatorName, chainID)
+		if err != nil {
+			d.logger.Warn("Failed to calculate consumer node ID",
+				"validator", validatorName,
+				"error", err)
+			continue
+		}
+
+		// Calculate the unique NodePort for this validator's consumer chain
+		validatorNodePort := CalculateValidatorNodePort(chainID, validatorName)
+
+		peer := fmt.Sprintf("%s@%s:%d", consumerNodeID, hostAddr, validatorNodePort)
+		peers = append(peers, peer)
+
+		d.logger.Info("Added peer from validator registry",
+			"validator", validatorName,
+			"consumer_node_id", consumerNodeID[:12]+"...",
+			"host", hostAddr,
+			"nodeport", validatorNodePort,
+			"peer", peer)
 	}
-	return ""
+
+	d.logger.Info("Peer discovery complete using validator registry",
+		"chain_id", chainID,
+		"total_peers", len(peers))
+
+	return peers, nil
 }
 
-// extractHost extracts the host from an endpoint (host:port)
-func (pd *PeerDiscovery) extractHost(endpoint string) string {
-	parts := strings.Split(endpoint, ":")
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return ""
-}
+// discoverPeersWithDNS is the original DNS-based discovery (single cluster mode)
+func (d *PeerDiscovery) discoverPeersWithDNS(ctx context.Context, consumerID string, chainID string, optedInValidators []string) ([]string, error) {
+	d.logger.Info("Using DNS-based peer discovery (single cluster mode)")
 
-// getValidatorFromPeer extracts validator name from peer endpoint
-func (pd *PeerDiscovery) getValidatorFromPeer(peer string) string {
-	// This is a simplified implementation
-	// In production, you'd have a more robust mapping
-	host := pd.extractHost(peer)
-	parts := strings.Split(host, "-")
-	if len(parts) >= 2 {
-		return fmt.Sprintf("%s-%s", parts[0], parts[1])
-	}
-	return host
-}
+	var peers []string
+	consumerP2PPort := d.getConsumerP2PPort(chainID)
 
-// ConsumerPorts holds all derived ports for a consumer chain
-type ConsumerPorts struct {
-	P2P  int32
-	RPC  int32
-	API  int32
-	GRPC int32
-}
+	for _, validatorName := range optedInValidators {
+		// Skip self
+		if validatorName == d.localValidatorMoniker {
+			continue
+		}
 
-// GetConsumerPorts returns all ports for a consumer chain
-func (pd *PeerDiscovery) GetConsumerPorts(consumerID string) ConsumerPorts {
-	return ConsumerPorts{
-		P2P:  pd.GetConsumerP2PPort(consumerID),
-		RPC:  pd.GetConsumerRPCPort(consumerID),
-		API:  pd.GetConsumerAPIPort(consumerID),
-		GRPC: pd.GetConsumerGRPCPort(consumerID),
+		// Calculate deterministic node ID
+		nodeID, err := d.nodeKeyGen.GetNodeID(validatorName, chainID)
+		if err != nil {
+			d.logger.Warn("Failed to calculate node ID",
+				"validator", validatorName,
+				"error", err)
+			continue
+		}
+
+		// Build peer address using DNS
+		namespace := chainID
+		peerHost := fmt.Sprintf(ServiceDNSFormat, chainID, namespace)
+		peer := fmt.Sprintf("%s@%s:%d", nodeID, peerHost, consumerP2PPort)
+
+		peers = append(peers, peer)
+		d.logger.Info("Added DNS peer",
+			"validator", validatorName,
+			"node_id", nodeID[:12]+"...",
+			"peer", peer)
 	}
+
+	return peers, nil
 }

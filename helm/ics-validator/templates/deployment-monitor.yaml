@@ -1,0 +1,136 @@
+{{- if .Values.monitor.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ics-validator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: monitor
+  template:
+    metadata:
+      labels:
+        {{- include "ics-validator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: monitor
+        validator: {{ .Values.validator.name }}
+        role: monitor
+    spec:
+      serviceAccountName: {{ include "ics-validator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+      - name: wait-for-validator
+        image: {{ .Values.chain.image }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          echo "Waiting for validator to be ready..."
+          until curl -sf {{ include "ics-validator.rpcEndpoint" . }}/status > /dev/null 2>&1; do
+            echo "Waiting for validator at {{ include "ics-validator.rpcEndpoint" . }}..."
+            sleep 2
+          done
+          echo "Validator is ready!"
+      - name: import-keys
+        image: {{ .Values.monitor.image }}
+        imagePullPolicy: {{ .Values.monitor.imagePullPolicy }}
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          echo "Importing validator key for {{ .Values.validator.name }}"
+          
+          {{- if eq .Values.keys.type "mnemonic" }}
+          # Import from mnemonic
+          MNEMONIC=$(cat /keys/mnemonic)
+          HD_PATH=$(cat /keys/hd-path)
+          
+          printf "%s\n" "$MNEMONIC" | monitor keys add {{ .Values.validator.name }} \
+            --recover \
+            --hd-path "$HD_PATH" \
+            --keyring-backend test \
+            --keyring-dir /data/.provider \
+            --interactive=false
+          {{- else }}
+          # For explicit keys, use the standard test mnemonic
+          echo "Importing key using standard test mnemonic"
+          echo "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" | \
+            monitor keys add {{ .Values.validator.name }} \
+            --recover \
+            --hd-path "{{ include "ics-validator.hdPath" . }}" \
+            --keyring-backend test \
+            --keyring-dir /data/.provider \
+            --interactive=false
+          {{- end }}
+          
+          # Verify key was imported
+          monitor keys list --keyring-backend test --keyring-dir /data/.provider
+          echo "Key import completed successfully"
+        volumeMounts:
+        - name: monitor-data
+          mountPath: /data
+        {{- if ne .Values.keys.type "existing-secret" }}
+        - name: keys
+          mountPath: /keys
+        {{- else }}
+        - name: keys-external
+          mountPath: /keys
+        {{- end }}
+      containers:
+      - name: monitor
+        image: {{ .Values.monitor.image }}
+        imagePullPolicy: {{ .Values.monitor.imagePullPolicy }}
+        command:
+        - "monitor"
+        - "start"
+        - "--node"
+        - {{ include "ics-validator.rpcEndpoint" . | quote }}
+        - "--chain-id"
+        - {{ .Values.chain.id | quote }}
+        - "--home"
+        - "/data"
+        - "--keyring-backend"
+        - "test"
+        {{- if .Values.monitor.providerEndpoints }}
+        - "--provider-endpoints"
+        - {{ include "ics-validator.providerEndpoints" . | quote }}
+        {{- end }}
+        - "--from"
+        - {{ .Values.validator.name | quote }}
+        env:
+        {{- if .Values.testnet.enabled }}
+        - name: MULTI_CLUSTER_MODE
+          value: "true"
+        - name: VALIDATOR_NAME
+          value: {{ .Values.validator.name | quote }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.resources.monitor | nindent 10 }}
+        volumeMounts:
+        - name: monitor-data
+          mountPath: /data
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+      volumes:
+      - name: monitor-data
+        {{- if .Values.storage.monitor.size }}
+        persistentVolumeClaim:
+          claimName: {{ include "ics-validator.fullname" . }}-monitor-data
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- if ne .Values.keys.type "existing-secret" }}
+      - name: keys
+        secret:
+          secretName: {{ include "ics-validator.fullname" . }}-keys
+      {{- else }}
+      - name: keys-external
+        secret:
+          secretName: {{ .Values.keys.secretName }}
+      {{- end }}
+{{- end }}

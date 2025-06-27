@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ics-validator.fullname" . }}-validator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: validator
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "ics-validator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: validator
+  ports:
+  - name: p2p
+    port: 26656
+    targetPort: p2p
+    protocol: TCP
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePorts.p2p }}
+    nodePort: {{ .Values.service.nodePorts.p2p }}
+    {{- end }}
+  - name: rpc
+    port: 26657
+    targetPort: rpc
+    protocol: TCP
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePorts.rpc }}
+    nodePort: {{ .Values.service.nodePorts.rpc }}
+    {{- end }}
+  - name: api
+    port: 1317
+    targetPort: api
+    protocol: TCP
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePorts.api }}
+    nodePort: {{ .Values.service.nodePorts.api }}
+    {{- end }}
+  - name: grpc
+    port: 9090
+    targetPort: grpc
+    protocol: TCP
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePorts.grpc }}
+    nodePort: {{ .Values.service.nodePorts.grpc }}
+    {{- end }}
+  - name: grpc-web
+    port: 9091
+    targetPort: grpc-web
+    protocol: TCP
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePorts.grpcWeb }}
+    nodePort: {{ .Values.service.nodePorts.grpcWeb }}
+    {{- end }}

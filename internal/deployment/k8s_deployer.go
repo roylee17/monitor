@@ -2,6 +2,8 @@ package deployment
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,9 +20,33 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// Consumer NodePort constants
+const (
+	// ConsumerNodePortBase is the base NodePort for consumer chain P2P services
+	ConsumerNodePortBase = 30100
+	
+	// ConsumerMaxPorts is the maximum number of consumer ports (30100-30199)
+	ConsumerMaxPorts = 100
+)
+
+// calculateConsumerNodePort calculates the NodePort for a consumer chain's P2P service.
+// This uses the same logic as gateway ports to ensure consistency.
+func calculateConsumerNodePort(chainID string) int32 {
+	// Use SHA256 for better distribution
+	hash := sha256.Sum256([]byte(chainID))
+	
+	// Use first 4 bytes as uint32
+	hashNum := binary.BigEndian.Uint32(hash[:4])
+	
+	// Calculate offset within allowed range
+	offset := hashNum % ConsumerMaxPorts
+	
+	return int32(ConsumerNodePortBase + offset)
+}
+
 // ScaleDeployment scales a deployment to the specified number of replicas
 func (d *K8sDeployer) ScaleDeployment(ctx context.Context, chainID string, replicas int32) error {
-	deploymentName := fmt.Sprintf("%s-consumer", chainID)
+	deploymentName := chainID // No suffix, matching createConsumerDeployment
 
 	// Get the deployment
 	deployment, err := d.clientset.AppsV1().Deployments(d.namespace).Get(ctx, deploymentName, metav1.GetOptions{})
@@ -54,12 +80,6 @@ func (d *K8sDeployer) DeleteConsumerChain(ctx context.Context, chainID string) e
 	serviceName := chainID // No suffix, matching createConsumerService
 	if err := d.clientset.CoreV1().Services(d.namespace).Delete(ctx, serviceName, metav1.DeleteOptions{}); err != nil {
 		d.logger.Warn("Failed to delete service", "error", err)
-	}
-
-	// Delete PVC
-	pvcName := fmt.Sprintf("%s-data", chainID) // Matching createConsumerPVC
-	if err := d.clientset.CoreV1().PersistentVolumeClaims(d.namespace).Delete(ctx, pvcName, metav1.DeleteOptions{}); err != nil {
-		d.logger.Warn("Failed to delete PVC", "error", err)
 	}
 
 	// Delete ConfigMap
@@ -121,9 +141,16 @@ type ConsumerDeployment struct {
 	// CCV Genesis patch
 	CCVPatch map[string]interface{}
 
+	// NodePort configuration
+	NodePorts struct {
+		P2P  int
+		RPC  int
+		GRPC int
+	}
+
 	// Deterministic node key JSON
 	NodeKeyJSON string
-	
+
 	// Consumer validator key (if assigned)
 	ConsumerKeyJSON string
 
@@ -221,11 +248,6 @@ func (d *K8sDeployer) DeployConsumerChain(ctx context.Context, deployment Consum
 		return fmt.Errorf("failed to create service: %w", err)
 	}
 
-	// Create PVC for consumer data
-	if err := d.createConsumerPVC(ctx, deployment); err != nil {
-		return fmt.Errorf("failed to create PVC: %w", err)
-	}
-
 	// Create Deployment for consumer chain
 	if err := d.createConsumerDeployment(ctx, deployment); err != nil {
 		return fmt.Errorf("failed to create deployment: %w", err)
@@ -286,32 +308,6 @@ func (d *K8sDeployer) getLabelsWithComponent(deployment ConsumerDeployment, comp
 	return labels
 }
 
-// ensureNamespace creates namespace if it doesn't exist
-func (d *K8sDeployer) ensureNamespace(ctx context.Context, namespace string) error {
-	_, err := d.clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-	if err != nil {
-		// Namespace doesn't exist, create it
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/component": "consumer-chains",
-					"app.kubernetes.io/part-of":   "interchain-security-monitor",
-				},
-			},
-		}
-
-		_, err = d.clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to create namespace %s: %w", namespace, err)
-		}
-
-		d.logger.Info("Created namespace", "namespace", namespace)
-	}
-
-	return nil
-}
-
 // createConsumerConfigMap creates a ConfigMap with consumer chain configuration
 func (d *K8sDeployer) createConsumerConfigMap(ctx context.Context, deployment ConsumerDeployment) error {
 	configMapName := d.getResourceName(deployment.ChainID, deployment.ValidatorName, "config")
@@ -335,8 +331,8 @@ if [ ! -f "$CHAIN_HOME/config/config.toml" ]; then
 
     # Add funded accounts for relayers and operators (required for consumer chains)
     echo "Adding genesis accounts..."
-    # Create a relayer account with funds
-    echo "relayer canyon creek lunar worth lab satisfy dismiss disorder dismiss spend mercy surround" | interchain-security-cd keys add relayer --recover --keyring-backend test --home "$CHAIN_HOME" 2>&1
+    # Create a relayer account with funds - using the same mnemonic as Hermes
+    echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art" | interchain-security-cd keys add relayer --recover --keyring-backend test --home "$CHAIN_HOME" 2>&1
     RELAYER_ADDR=$(interchain-security-cd keys show relayer -a --keyring-backend test --home "$CHAIN_HOME")
     echo "Relayer address: $RELAYER_ADDR"
     interchain-security-cd add-genesis-account $RELAYER_ADDR 100000000stake --home "$CHAIN_HOME"
@@ -360,9 +356,9 @@ if [ -f "/scripts/ccv-patch.json" ]; then
 
     # Always add funded accounts when we have CCV patch (consumer chain needs them)
     echo "Adding funded genesis accounts for consumer chain..."
-    # Create a relayer account with funds
-    echo "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius" | interchain-security-cd keys add relayer --recover --keyring-backend test --home "$CHAIN_HOME" --output json 2>/dev/null || true
-    RELAYER_ADDR=$(interchain-security-cd keys show relayer -a --keyring-backend test --home "$CHAIN_HOME" 2>/dev/null || echo "cosmos1r5v5srda7xfth3hn2s26txvrcrntldjumt8mhl")
+    # Create a relayer account with funds - using the same mnemonic as Hermes
+    echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art" | interchain-security-cd keys add relayer --recover --keyring-backend test --home "$CHAIN_HOME" --output json 2>/dev/null || true
+    RELAYER_ADDR=$(interchain-security-cd keys show relayer -a --keyring-backend test --home "$CHAIN_HOME" 2>/dev/null || echo "consumer1r5v5srda7xfth3hn2s26txvrcrntldju7725yc")
     echo "Relayer address: $RELAYER_ADDR"
 
     # Add genesis account only if not already added
@@ -495,7 +491,6 @@ fi
 if [ -f /scripts/priv_validator_key.json ]; then
     echo "Using assigned consumer validator key"
     cp /scripts/priv_validator_key.json "$CHAIN_HOME/config/priv_validator_key.json"
-    VALIDATOR_ADDR=$(interchain-security-cd comet show-validator --home "$CHAIN_HOME")
     echo "Our validator address: $VALIDATOR_ADDR"
 else
     echo "WARNING: No consumer validator key provided - chain will not be able to produce blocks!"
@@ -574,7 +569,7 @@ exec interchain-security-cd start --home "$CHAIN_HOME" --log_level debug
 		d.logger.Info("Adding deterministic node key to ConfigMap",
 			"config_map", configMapName)
 	}
-	
+
 	// Add consumer validator key if provided (for assigned consensus keys)
 	if deployment.ConsumerKeyJSON != "" {
 		configMap.Data["priv_validator_key.json"] = deployment.ConsumerKeyJSON
@@ -591,7 +586,7 @@ exec interchain-security-cd start --home "$CHAIN_HOME" --log_level debug
 			if err != nil {
 				return fmt.Errorf("failed to get existing ConfigMap: %w", err)
 			}
-			
+
 			// Update the data while preserving existing entries
 			if existingConfigMap.Data == nil {
 				existingConfigMap.Data = make(map[string]string)
@@ -599,7 +594,7 @@ exec interchain-security-cd start --home "$CHAIN_HOME" --log_level debug
 			for key, value := range configMap.Data {
 				existingConfigMap.Data[key] = value
 			}
-			
+
 			// Update the ConfigMap
 			_, err = d.clientset.CoreV1().ConfigMaps(deployment.Namespace).Update(ctx, existingConfigMap, metav1.UpdateOptions{})
 			if err != nil {
@@ -621,6 +616,10 @@ exec interchain-security-cd start --home "$CHAIN_HOME" --log_level debug
 // createConsumerService creates a Service for the consumer chain
 func (d *K8sDeployer) createConsumerService(ctx context.Context, deployment ConsumerDeployment) error {
 	serviceName := deployment.ChainID
+
+	d.logger.Info("Creating consumer service with ClusterIP",
+		"chain_id", deployment.ChainID,
+		"namespace", deployment.Namespace)
 
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -649,6 +648,12 @@ func (d *K8sDeployer) createConsumerService(ctx context.Context, deployment Cons
 					TargetPort: intstr.FromInt(int(deployment.RESTPort)),
 					Protocol:   corev1.ProtocolTCP,
 				},
+				{
+					Name:       "grpc",
+					Port:       deployment.GRPCPort,
+					TargetPort: intstr.FromInt(int(deployment.GRPCPort)),
+					Protocol:   corev1.ProtocolTCP,
+				},
 			},
 			Type: corev1.ServiceTypeClusterIP,
 		},
@@ -671,50 +676,10 @@ func (d *K8sDeployer) createConsumerService(ctx context.Context, deployment Cons
 	return nil
 }
 
-// createConsumerPVC creates a PersistentVolumeClaim for consumer data
-func (d *K8sDeployer) createConsumerPVC(ctx context.Context, deployment ConsumerDeployment) error {
-	pvcName := d.getResourceName(deployment.ChainID, deployment.ValidatorName, "data")
-
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pvcName,
-			Namespace: deployment.Namespace,
-			Labels:    d.getLabelsWithComponent(deployment, "storage"),
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce,
-			},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: parseQuantity("10Gi"),
-				},
-			},
-		},
-	}
-
-	_, err := d.clientset.CoreV1().PersistentVolumeClaims(deployment.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
-	if err != nil {
-		if errors.IsAlreadyExists(err) {
-			// PVC already exists, that's fine
-			d.logger.Info("PVC already exists for consumer chain",
-				"pvc", pvcName, "namespace", deployment.Namespace)
-		} else {
-			return fmt.Errorf("failed to create PVC: %w", err)
-		}
-	} else {
-		d.logger.Info("Created PVC for consumer chain",
-			"pvc", pvcName, "namespace", deployment.Namespace)
-	}
-
-	return nil
-}
-
 // createConsumerDeployment creates the main consumer chain Deployment
 func (d *K8sDeployer) createConsumerDeployment(ctx context.Context, deployment ConsumerDeployment) error {
 	deploymentName := deployment.ChainID
-	configMapName := fmt.Sprintf("%s-config", deployment.ChainID)
-	pvcName := fmt.Sprintf("%s-data", deployment.ChainID)
+	configMapName := d.getResourceName(deployment.ChainID, deployment.ValidatorName, "config")
 
 	k8sDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -732,6 +697,7 @@ func (d *K8sDeployer) createConsumerDeployment(ctx context.Context, deployment C
 					Labels: d.getSelectors(deployment),
 				},
 				Spec: corev1.PodSpec{
+					TerminationGracePeriodSeconds: int64Ptr(5),
 					Containers: []corev1.Container{
 						{
 							Name:            "consumer-daemon",
@@ -774,6 +740,11 @@ func (d *K8sDeployer) createConsumerDeployment(ctx context.Context, deployment C
 								{
 									Name:          "rest",
 									ContainerPort: deployment.RESTPort,
+									Protocol:      corev1.ProtocolTCP,
+								},
+								{
+									Name:          "grpc",
+									ContainerPort: deployment.GRPCPort,
 									Protocol:      corev1.ProtocolTCP,
 								},
 							},
@@ -823,8 +794,8 @@ func (d *K8sDeployer) createConsumerDeployment(ctx context.Context, deployment C
 						{
 							Name: "consumer-data",
 							VolumeSource: corev1.VolumeSource{
-								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: pvcName,
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									// SizeLimit: parseQuantity("2Gi"), // Optional size limit
 								},
 							},
 						},
@@ -852,6 +823,11 @@ func (d *K8sDeployer) createConsumerDeployment(ctx context.Context, deployment C
 
 	d.logger.Info("Created Deployment for consumer chain",
 		"deployment", deploymentName, "namespace", deployment.Namespace)
+
+	// Create NodePort service for consumer chain to enable cross-cluster P2P connectivity
+	if err := d.createConsumerService(ctx, deployment); err != nil {
+		return fmt.Errorf("failed to create service: %w", err)
+	}
 
 	return nil
 }
@@ -941,8 +917,8 @@ func (d *K8sDeployer) DeploymentExists(ctx context.Context, chainID string) (boo
 	if d.namespace == "" {
 		return false, nil
 	}
-	
-	deploymentName := fmt.Sprintf("%s-consumer", chainID)
+
+	deploymentName := chainID // No suffix, matching createConsumerDeployment
 
 	_, err := d.clientset.AppsV1().Deployments(d.namespace).Get(ctx, deploymentName, metav1.GetOptions{})
 	if err != nil {
@@ -977,6 +953,10 @@ func parseQuantity(s string) resource.Quantity {
 }
 
 func int32Ptr(i int32) *int32 {
+	return &i
+}
+
+func int64Ptr(i int64) *int64 {
 	return &i
 }
 

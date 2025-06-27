@@ -3,6 +3,9 @@
 # Build stage
 FROM golang:1.23-bookworm AS builder
 
+# Enable BuildKit inline cache
+ARG BUILDKIT_INLINE_CACHE=1
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     git \
@@ -13,17 +16,22 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy go mod files
+# Copy go mod files first for better caching
 COPY go.mod go.sum ./
 
-# Download dependencies
-RUN go mod download
+# Download dependencies with cache mount
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download && go mod verify
 
 # Copy source code
 COPY . .
 
-# Build the monitor binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o monitor ./cmd/monitor
+# Build the monitor binary with cache mount
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -trimpath -o monitor ./cmd/monitor
 
 # Runtime stage
 FROM debian:bookworm-slim

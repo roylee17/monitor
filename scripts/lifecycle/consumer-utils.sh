@@ -21,7 +21,7 @@ get_validator_pod() {
     local namespace="${2:-$DEFAULT_NAMESPACE}"
     
     local pod
-    pod=$(kubectl get pods -n "${namespace}" -l "role=validator,validator=${validator}" -o name 2>/dev/null | head -1)
+    pod=$(kubectl get pods -n "${namespace}" -l "app.kubernetes.io/component=validator" -o name 2>/dev/null | head -1)
     if [ -z "$pod" ]; then
         log_error "No validator pod found for ${validator}"
         return 1
@@ -34,7 +34,7 @@ get_any_validator_pod() {
     local namespace="${1:-$DEFAULT_NAMESPACE}"
     
     local pod
-    pod=$(kubectl get pods -n "${namespace}" -l role=validator -o name 2>/dev/null | head -1)
+    pod=$(kubectl get pods -n "${namespace}" -l app.kubernetes.io/component=validator -o name 2>/dev/null | head -1)
     if [ -z "$pod" ]; then
         log_error "No validator pods found"
         return 1

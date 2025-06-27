@@ -212,6 +212,7 @@ func (m *WebSocketMonitor) isRelevantEvent(eventType string) bool {
 		"remove_consumer",   // When consumer removal is initiated
 		"opt_in",           // Validator opt-in events
 		"opt_out",          // Validator opt-out events
+		"edit_validator",   // Validator description updates (includes P2P endpoints)
 	}
 
 	for _, relevant := range relevantEvents {

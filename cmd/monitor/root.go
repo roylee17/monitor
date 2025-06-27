@@ -6,11 +6,9 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
-	"github.com/cosmos/cosmos-sdk/client/keys"
 	"github.com/cosmos/interchain-security-monitor/internal/config"
 	"github.com/cosmos/interchain-security-monitor/internal/monitor"
 	"github.com/cosmos/interchain-security-monitor/internal/selector"
-	"github.com/cosmos/interchain-security-monitor/internal/validator"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -42,13 +40,10 @@ func init() {
 
 	// Add subcommands with improved SDK integration
 	rootCmd.AddCommand(newStartCmd())
-	rootCmd.AddCommand(newValidatorsCmd())
 	rootCmd.AddCommand(newSubnetCmd())
-	rootCmd.AddCommand(newCreateConsumerCmd())
-	rootCmd.AddCommand(newQueryConsumersCmd())
-	
-	// Add SDK's keys management commands
-	rootCmd.AddCommand(keys.Commands())
+
+	// Add keys management command
+	rootCmd.AddCommand(keysCmd())
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -81,11 +76,11 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Get client context from SDK flags
 			clientCtx := client.GetClientContextFromCmd(cmd)
-			
+
 			// Initialize Codec and TxConfig if not present
-			if clientCtx.TxConfig == nil || clientCtx.Codec == nil {
-				codec, txConfig := makeEncodingConfig()
-				clientCtx = clientCtx.WithCodec(codec).WithTxConfig(txConfig)
+			if clientCtx.TxConfig == nil || clientCtx.Codec == nil || clientCtx.InterfaceRegistry == nil {
+				codec, txConfig, interfaceRegistry := makeEncodingConfig()
+				clientCtx = clientCtx.WithCodec(codec).WithTxConfig(txConfig).WithInterfaceRegistry(interfaceRegistry)
 			}
 
 			// Handle home directory flag if provided
@@ -93,7 +88,7 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 			if homeFlag != "" {
 				clientCtx = clientCtx.WithHomeDir(homeFlag)
 			}
-			
+
 			// Ensure home directory is set
 			if clientCtx.HomeDir == "" {
 				// Use default if not set
@@ -158,8 +153,18 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 				keyringBackend = "test" // Default for Docker environment
 			}
 
-			// Note: SDK keyring initialization is disabled due to known issues
-			// The monitor will use CLI-based transaction service instead
+			// Initialize keyring for SDK operations
+			if fromKey != "" && clientCtx.HomeDir != "" {
+				updatedCtx, err := monitor.InitializeKeyring(clientCtx, clientCtx.HomeDir+"/.provider", keyringBackend, fromKey)
+				if err != nil {
+					// Log warning but continue - CLI fallback will be used
+					fmt.Printf("Warning: Failed to initialize SDK keyring: %v\n", err)
+					fmt.Printf("Monitor will use CLI-based operations as fallback\n")
+				} else {
+					clientCtx = updatedCtx
+					fmt.Printf("Successfully initialized SDK keyring\n")
+				}
+			}
 
 			fmt.Printf("Using validator key: %s\n", fromKey)
 			fmt.Printf("Using keyring backend: %s\n", keyringBackend)
@@ -169,7 +174,7 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 			// Get K8s deployment configuration
 			consumerNamespace, _ := cmd.Flags().GetString("consumer-namespace")
 			consumerImage, _ := cmd.Flags().GetString("consumer-image")
-			
+
 			// Get provider endpoints for peer discovery
 			providerEndpoints, _ := cmd.Flags().GetStringSlice("provider-endpoints")
 
@@ -181,7 +186,7 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 				FromKey:        fromKey,
 				KeyringBackend: keyringBackend,
 				HomeDir:        clientCtx.HomeDir,
-				
+
 				// K8s deployment settings
 				ConsumerNamespace: consumerNamespace,
 				ConsumerImage:     consumerImage,
@@ -199,7 +204,7 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 
 	// Add monitor-specific flags
 	cmd.Flags().String("ws-url", config.DefaultWebSocketURL, "WebSocket URL for monitoring blockchain events")
-	
+
 	// Add Kubernetes deployment configuration
 	cmd.Flags().String("consumer-namespace", "", "Kubernetes namespace for consumer chain deployments (defaults to <validator>-consumer-chains)")
 	cmd.Flags().String("consumer-image", "ghcr.io/cosmos/interchain-security:v7.0.1", "Docker image to use for consumer chain deployments")
@@ -219,63 +224,6 @@ Tracks consumer chain creation, validator opt-ins, and consensus key assignments
 	cmd.Flags().String(flags.FlagKeyringBackend, flags.DefaultKeyringBackend, "Select keyring's backend (os|file|kwallet|pass|test)")
 	cmd.Flags().String(flags.FlagChainID, "", "The network chain ID")
 	cmd.Flags().String(flags.FlagHome, "", "directory for config and data")
-
-	return cmd
-}
-
-// newValidatorsCmd returns a Cobra command for querying and printing validators
-func newValidatorsCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "validators",
-		Short: "Queries and prints the current validator set",
-		Long: `Connects to a CometBFT RPC endpoint and retrieves the current validator set,
-then prints their addresses, proposer priorities, and voting power. Automatically detects
-and marks the local validator running on localhost. Optionally marks your validator if
---validator-pubkey is provided.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-
-			// Get client context from SDK flags
-			clientCtx := client.GetClientContextFromCmd(cmd)
-
-			// Read the --node flag directly from the command flags first
-			nodeFlag, _ := cmd.Flags().GetString("node")
-
-			// Get RPC URL from our custom flag or SDK node flag
-			rpcURL := viper.GetString("rpc-url")
-			if rpcURL == "" {
-				rpcURL = nodeFlag
-			}
-			if rpcURL == "" {
-				rpcURL = clientCtx.NodeURI
-			}
-			if rpcURL == "" {
-				rpcURL = config.DefaultRPCURL // Default fallback
-			}
-
-			// Update client context with the correct node URI first
-			clientCtx = clientCtx.WithNodeURI(rpcURL)
-
-			// Create RPC client manually and attach to client context
-			rpcClient, err := client.NewClientFromNode(rpcURL)
-			if err != nil {
-				return fmt.Errorf("failed to create RPC client: %w", err)
-			}
-
-			// Update client context with proper RPC client to enable online mode
-			clientCtx = clientCtx.WithClient(rpcClient)
-
-			return validator.QueryAndPrintValidatorsWithContext(clientCtx, rpcURL)
-		},
-	}
-
-	defaultConfig := config.DefaultConfig()
-	cmd.Flags().String("rpc-url", defaultConfig.RPCURL, "CometBFT RPC URL to connect to for querying validators")
-	cmd.Flags().String("validator-pubkey", "", "Consensus public key of your validator to highlight in output (optional)")
-
-	viper.BindPFlag("rpc-url", cmd.Flags().Lookup("rpc-url"))
-
-	// Add SDK query flags for this command
-	flags.AddQueryFlagsToCmd(cmd)
 
 	return cmd
 }

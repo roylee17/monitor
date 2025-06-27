@@ -20,6 +20,9 @@
 #    - Used for signing blocks as part of consensus
 #    - Stored in config/priv_validator_key.json
 #    - This is what makes a node a "validator" in the consensus
+#
+# Environment Variables:
+# - DEBUG_TIMESTAMPS=true  Enable timestamps in log output (default: false)
 
 set -e
 
@@ -30,8 +33,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CHAIN_ID="provider-1"
 DENOM="stake"
 BINARY="interchain-security-pd"
-ASSETS_DIR="$PROJECT_ROOT/k8s/testnet/assets"
-KEYS_BACKUP_DIR="$PROJECT_ROOT/k8s/testnet/keys-backup"
+ASSETS_DIR="$PROJECT_ROOT/testnet/assets"
+KEYS_BACKUP_DIR="$PROJECT_ROOT/testnet/keys-backup"
 
 # Validator names
 VALIDATORS=("alice" "bob" "charlie")
@@ -44,9 +47,17 @@ SAVE_KEYS=false        # Set via command line flag (-s to save keys)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common/logging.sh"
 
+# Suppress sonic warnings from the Go binary
+export GODEBUG=asyncpreemptoff=1
+
 # Override log_info to include timestamp (using variables from logging.sh)
+# Use DEBUG_TIMESTAMPS=true to enable timestamps for debugging
 log_info() {
-    echo -e "${COLOR_GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${COLOR_RESET} $*"
+    if [ "${DEBUG_TIMESTAMPS:-false}" = "true" ]; then
+        echo -e "${COLOR_GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${COLOR_RESET} $*"
+    else
+        echo -e "${COLOR_GREEN}[INFO]${COLOR_RESET} $*"
+    fi
 }
 
 # error function that exits
@@ -93,6 +104,7 @@ get_hd_path() {
 # These are different from validator account keys (which use secp256k1)
 # - node_key.json: For P2P networking
 # - priv_validator_key.json: For consensus/block signing
+# Also saves keyring for idempotency
 save_keys() {
     local validator=$1
     local home_dir="$ASSETS_DIR/$validator"
@@ -102,13 +114,21 @@ save_keys() {
         cp "$home_dir/config/node_key.json" "$KEYS_BACKUP_DIR/$validator/"
         cp "$home_dir/config/priv_validator_key.json" "$KEYS_BACKUP_DIR/$validator/"
         cp "$home_dir/data/priv_validator_state.json" "$KEYS_BACKUP_DIR/$validator/" 2>/dev/null || true
-        log_info "  Saved P2P and consensus keys for $validator to backup directory"
+        
+        # Also save keyring for idempotency
+        if [ -d "$home_dir/keyring-test" ]; then
+            mkdir -p "$KEYS_BACKUP_DIR/$validator/keyring-test"
+            cp -r "$home_dir/keyring-test/"* "$KEYS_BACKUP_DIR/$validator/keyring-test/" 2>/dev/null || true
+        fi
+        
+        log_info "  Saved P2P, consensus keys, and keyring for $validator to backup directory"
     fi
 }
 
 # Always try to restore P2P and consensus Ed25519 keys from backup (if exists)
 # node_key.json: P2P networking key (determines node ID for peer connections)
 # priv_validator_key.json: Consensus key for block signing (validator identity)
+# Also restores keyring for idempotency
 restore_keys() {
     local validator=$1
     local home_dir="$ASSETS_DIR/$validator"
@@ -118,7 +138,14 @@ restore_keys() {
         cp "$KEYS_BACKUP_DIR/$validator/node_key.json" "$home_dir/config/"
         cp "$KEYS_BACKUP_DIR/$validator/priv_validator_key.json" "$home_dir/config/"
         cp "$KEYS_BACKUP_DIR/$validator/priv_validator_state.json" "$home_dir/data/" 2>/dev/null || true
-        log_info "  Restored P2P and consensus keys for $validator from backup"
+        
+        # Also restore keyring if exists
+        if [ -d "$KEYS_BACKUP_DIR/$validator/keyring-test" ]; then
+            mkdir -p "$home_dir/keyring-test"
+            cp -r "$KEYS_BACKUP_DIR/$validator/keyring-test/"* "$home_dir/keyring-test/" 2>/dev/null || true
+        fi
+        
+        log_info "  Restored P2P, consensus keys, and keyring for $validator from backup"
         return 0
     fi
     return 1
@@ -139,21 +166,26 @@ init_validator() {
         log_info "  Using newly generated P2P and consensus keys"
     fi
 
-    # Generate deterministic keys using mnemonic and HD path
-    local mnemonic hd_path
-    mnemonic=$(get_mnemonic)
-    hd_path=$(get_hd_path "$validator")
+    # Check if keyring already exists
+    if [ -d "$home_dir/keyring-test" ] && [ -n "$(ls -A "$home_dir/keyring-test" 2>/dev/null)" ]; then
+        log_info "  Using existing keyring for $validator"
+    else
+        # Generate deterministic keys using mnemonic and HD path
+        local mnemonic hd_path
+        mnemonic=$(get_mnemonic)
+        hd_path=$(get_hd_path "$validator")
 
-    # Add validator account key from mnemonic with specific HD path
-    # This is the account key used for transactions, different from consensus keys
-    echo "$mnemonic" | "$BINARY" keys add "$validator" \
-        --home "$home_dir" \
-        --keyring-backend test \
-        --recover \
-        --hd-path "$hd_path" \
-        --output json > "$home_dir/key_info.json" 2>&1 || {
-        error "Failed to add validator account key for $validator. Check mnemonic format."
-    }
+        # Add validator account key from mnemonic with specific HD path
+        # This is the account key used for transactions, different from consensus keys
+        echo "$mnemonic" | "$BINARY" keys add "$validator" \
+            --home "$home_dir" \
+            --keyring-backend test \
+            --recover \
+            --hd-path "$hd_path" \
+            --output json > "$home_dir/key_info.json" 2>&1 || {
+            error "Failed to add validator account key for $validator. Check mnemonic format."
+        }
+    fi
 
     # Get validator address
     local address
@@ -189,6 +221,13 @@ create_provisional_genesis() {
             --home "$genesis_home" \
             --keyring-backend test
     done < "$ASSETS_DIR/validators.txt"
+
+    # Add Hermes relayer account to genesis with funds for IBC transactions
+    local HERMES_ADDRESS="cosmos1r5v5srda7xfth3hn2s26txvrcrntldjumt8mhl"
+    log_info "  Adding genesis account for Hermes relayer ($HERMES_ADDRESS)..."
+    "$BINARY" genesis add-genesis-account "$HERMES_ADDRESS" "100000000000000000000$DENOM" \
+        --home "$genesis_home" \
+        --keyring-backend test
 
     # Copy provisional genesis to all validators
     for validator in "${VALIDATORS[@]}"; do

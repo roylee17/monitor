@@ -21,7 +21,7 @@ func NewNodeKeyGenerator() *NodeKeyGenerator {
 // GenerateNodeKey generates a deterministic node key for a validator on a specific chain
 func (g *NodeKeyGenerator) GenerateNodeKey(validatorName, chainID string) (*p2p.NodeKey, error) {
 	// Create a deterministic seed from validator name and chain ID
-	seed := fmt.Sprintf("ics-consumer-%s-%s", validatorName, chainID)
+	seed := fmt.Sprintf("%s-%s-%s", NodeIDPrefix, validatorName, chainID)
 	
 	// Hash the seed to get 32 bytes for ed25519 private key
 	hash := sha256.Sum256([]byte(seed))

@@ -2,17 +2,17 @@ package selector
 
 import (
 	"context"
-	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"math/big"
 	"sort"
-	"strconv"
 
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/types/query"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
@@ -20,15 +20,18 @@ import (
 type ValidatorInfo struct {
 	OperatorAddress string
 	Moniker         string
-	VotingPower     string // Changed to string to handle large numbers
+	VotingPower     *big.Int // Changed to big.Int for accurate calculations
 	ConsensusKey    string
 	IsLocal         bool
 }
 
 // SelectionResult contains the result of validator selection
 type SelectionResult struct {
-	ValidatorSubset []ValidatorInfo
-	ShouldOptIn     bool
+	ValidatorSubset      []ValidatorInfo
+	ShouldOptIn          bool
+	TotalVotingPower     *big.Int
+	SubsetVotingPower    *big.Int
+	VotingPowerThreshold float64
 }
 
 // ValidatorSelector handles validator subset selection
@@ -47,55 +50,89 @@ func NewValidatorSelector(clientCtx client.Context, rpcClient *rpcclient.HTTP, l
 	}
 }
 
-// SelectValidatorSubset selects a validator subset for the consumer chain
-func (vs *ValidatorSelector) SelectValidatorSubset(consumerID string, subsetRatio float64) (*SelectionResult, error) {
-
+// SelectValidatorSubset selects a deterministic validator subset based on voting power threshold
+// The selection is deterministic across all monitors - they will all select the same subset
+func (vs *ValidatorSelector) SelectValidatorSubset(consumerID string, votingPowerThreshold float64) (*SelectionResult, error) {
 	// Get all bonded validators from connected blockchain
 	validators, err := vs.getBondedValidators()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get bonded validators from blockchain: %w", err)
 	}
 
-	// Sort validators by voting power (descending) for deterministic selection
-	sort.Slice(validators, func(i, j int) bool {
-		// Convert string voting power to big.Int for comparison
-		powerI := new(big.Int)
-		powerJ := new(big.Int)
-		powerI.SetString(validators[i].VotingPower, 10)
-		powerJ.SetString(validators[j].VotingPower, 10)
-		
-		cmp := powerI.Cmp(powerJ)
-		if cmp == 0 {
-			return validators[i].OperatorAddress < validators[j].OperatorAddress
+	// Calculate total voting power
+	totalVotingPower := big.NewInt(0)
+	for _, v := range validators {
+		totalVotingPower.Add(totalVotingPower, v.VotingPower)
+	}
+
+	// Calculate the voting power threshold
+	thresholdPower := new(big.Float).Mul(
+		new(big.Float).SetInt(totalVotingPower),
+		big.NewFloat(votingPowerThreshold),
+	)
+	thresholdPowerInt, _ := thresholdPower.Int(nil)
+
+	// Deterministic selection based on consumer ID
+	// Sort validators by a deterministic order that includes consumer ID
+	// This ensures all monitors select the same subset for a given consumer
+	sortedValidators := make([]ValidatorInfo, len(validators))
+	copy(sortedValidators, validators)
+	
+	// Create deterministic but shuffled order based on consumer ID
+	// Hash each validator address with consumer ID to get a deterministic shuffle
+	type validatorWithHash struct {
+		validator ValidatorInfo
+		hash      string
+	}
+	
+	validatorsWithHash := make([]validatorWithHash, len(sortedValidators))
+	for i, v := range sortedValidators {
+		// Combine validator address with consumer ID for deterministic hash
+		combined := v.OperatorAddress + consumerID
+		hash := fmt.Sprintf("%x", combined) // Simple string hash for deterministic ordering
+		validatorsWithHash[i] = validatorWithHash{
+			validator: v,
+			hash:      hash,
 		}
-		return cmp > 0 // Sort descending (higher power first)
+	}
+	
+	// Sort by hash to get deterministic but shuffled order
+	sort.Slice(validatorsWithHash, func(i, j int) bool {
+		return validatorsWithHash[i].hash < validatorsWithHash[j].hash
 	})
 
-	// Calculate subset size
-	subsetSize := int(float64(len(validators)) * subsetRatio)
-	if subsetSize < 1 {
-		subsetSize = 1
-	}
-	if subsetSize > len(validators) {
-		subsetSize = len(validators)
-	}
+	// Select validators in deterministic order until we reach the voting power threshold
+	selectedValidators := make([]ValidatorInfo, 0)
+	accumulatedPower := big.NewInt(0)
+	var localValidatorSelected bool
 
-	// Select validator subset using deterministic algorithm based on consumer ID
-	subset := vs.selectDeterministicSubset(validators, subsetSize, consumerID)
-
-	// Check if local validator is in subset
-	var shouldOptIn bool
-
-	for i := range subset {
-		if subset[i].IsLocal {
-			shouldOptIn = true
+	for _, vwh := range validatorsWithHash {
+		// Check if we've reached the threshold
+		if accumulatedPower.Cmp(thresholdPowerInt) >= 0 {
 			break
+		}
+
+		// Add to selected list
+		selectedValidators = append(selectedValidators, vwh.validator)
+		accumulatedPower.Add(accumulatedPower, vwh.validator.VotingPower)
+
+		// Check if this is the local validator
+		if vwh.validator.IsLocal {
+			localValidatorSelected = true
 		}
 	}
 
+	// Sort selected validators by operator address for consistent ordering in logs
+	sort.Slice(selectedValidators, func(i, j int) bool {
+		return selectedValidators[i].OperatorAddress < selectedValidators[j].OperatorAddress
+	})
+
 	return &SelectionResult{
-		ValidatorSubset: subset,
-		ShouldOptIn:     shouldOptIn,
+		ValidatorSubset:      selectedValidators,
+		ShouldOptIn:          localValidatorSelected,
+		TotalVotingPower:     totalVotingPower,
+		SubsetVotingPower:    accumulatedPower,
+		VotingPowerThreshold: votingPowerThreshold,
 	}, nil
 }
 
@@ -114,37 +151,62 @@ func (vs *ValidatorSelector) getBondedValidators() ([]ValidatorInfo, error) {
 		return nil, fmt.Errorf("failed to query validators: %w", err)
 	}
 
-	// Get local validator moniker for identification
-	localMoniker, err := vs.GetLocalValidatorMoniker()
-	if err != nil {
-		log.Printf("Warning: Could not identify local validator: %v", err)
+	// Unpack interfaces for all validators to properly handle Any types
+	for i := range resp.Validators {
+		if err := resp.Validators[i].UnpackInterfaces(vs.clientCtx.InterfaceRegistry); err != nil {
+			log.Printf("Warning: failed to unpack interfaces for validator %s: %v", 
+				resp.Validators[i].Description.Moniker, err)
+		}
 	}
-	log.Printf("Local validator moniker: %s", localMoniker)
+
+	// Get our account address from keyring - this is the source of truth
+	localAccountAddr, err := vs.getLocalAccountAddress()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local account address: %w", err)
+	}
+	log.Printf("Local account address from keyring: %s (key: %s)", localAccountAddr, vs.localKey)
 
 	validators := make([]ValidatorInfo, len(resp.Validators))
 	for i, v := range resp.Validators {
-		// Check for exact match or validator-prefix match
+		// Check if this is the local validator by comparing addresses
 		isLocal := false
-		if localMoniker != "" {
-			// Exact match
-			if v.Description.Moniker == localMoniker {
-				isLocal = true
-			}
-			// Handle case where node moniker is "validator-alice" but chain moniker is "alice"
-			if localMoniker == "validator-"+v.Description.Moniker {
-				isLocal = true
-				log.Printf("Matched local validator with prefix: node=%s, chain=%s", localMoniker, v.Description.Moniker)
-			}
+		
+		// Convert validator operator address to account address for comparison
+		valAddr, err := sdk.ValAddressFromBech32(v.OperatorAddress)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse validator address %s: %w", v.OperatorAddress, err)
 		}
-		if v.Description.Moniker == "alice" || v.Description.Moniker == "bob" || v.Description.Moniker == "charlie" {
-			log.Printf("Validator %s: moniker=%s, localMoniker=%s, isLocal=%v", 
-				v.OperatorAddress, v.Description.Moniker, localMoniker, isLocal)
+		accAddr := sdk.AccAddress(valAddr)
+		
+		// Debug logging
+		log.Printf("Comparing addresses for %s: validator acc addr: %s, local acc addr: %s", 
+			v.Description.Moniker, accAddr.String(), localAccountAddr)
+		
+		if accAddr.String() == localAccountAddr {
+			isLocal = true
+			log.Printf("Identified local validator: %s (address: %s)", v.Description.Moniker, localAccountAddr)
 		}
+
+		// Convert tokens to big.Int
+		tokens, ok := new(big.Int).SetString(v.Tokens.String(), 10)
+		if !ok {
+			return nil, fmt.Errorf("failed to parse validator tokens: %s", v.Tokens.String())
+		}
+
+		// Extract consensus pubkey properly
+		consensusKey := ""
+		if pubKey, err := v.ConsPubKey(); err == nil {
+			// Get the raw bytes of the public key and encode to base64
+			consensusKey = base64.StdEncoding.EncodeToString(pubKey.Bytes())
+		} else {
+			log.Printf("Warning: failed to extract consensus pubkey for validator %s: %v", v.Description.Moniker, err)
+		}
+
 		validators[i] = ValidatorInfo{
 			OperatorAddress: v.OperatorAddress,
 			Moniker:         v.Description.Moniker,
-			VotingPower:     v.Tokens.String(),
-			ConsensusKey:    v.ConsensusPubkey.String(),
+			VotingPower:     tokens,
+			ConsensusKey:    consensusKey,
 			IsLocal:         isLocal,
 		}
 	}
@@ -152,7 +214,31 @@ func (vs *ValidatorSelector) getBondedValidators() ([]ValidatorInfo, error) {
 	return validators, nil
 }
 
+// getLocalAccountAddress gets the account address from keyring
+func (vs *ValidatorSelector) getLocalAccountAddress() (string, error) {
+	if vs.clientCtx.Keyring == nil {
+		return "", fmt.Errorf("keyring not available in client context")
+	}
+	
+	if vs.localKey == "" {
+		return "", fmt.Errorf("local key not configured")
+	}
+	
+	keyInfo, err := vs.clientCtx.Keyring.Key(vs.localKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to get key info for %s: %w", vs.localKey, err)
+	}
+	
+	addr, err := keyInfo.GetAddress()
+	if err != nil {
+		return "", fmt.Errorf("failed to get address from key info: %w", err)
+	}
+	
+	return addr.String(), nil
+}
+
 // GetLocalValidatorMoniker gets the local validator's moniker
+// DEPRECATED: This method is unreliable as monikers are not unique
 func (vs *ValidatorSelector) GetLocalValidatorMoniker() (string, error) {
 	if vs.rpcClient == nil {
 		return "", fmt.Errorf("no RPC client available")
@@ -170,61 +256,33 @@ func (vs *ValidatorSelector) GetLocalValidatorMoniker() (string, error) {
 	return status.NodeInfo.Moniker, nil
 }
 
-// selectDeterministicSubset selects a deterministic subset of validators
-func (vs *ValidatorSelector) selectDeterministicSubset(validators []ValidatorInfo, subsetSize int, seed string) []ValidatorInfo {
-	if subsetSize >= len(validators) {
-		return validators
-	}
-
-	// Create a deterministic hash-based selection
-	selected := make([]ValidatorInfo, 0, subsetSize)
-	used := make(map[string]bool)
-
-	// Use consumer ID as seed for deterministic selection
-	hasher := sha256.New()
-	hasher.Write([]byte(seed))
-	seedHash := hasher.Sum(nil)
-
-	// Convert hash to big integer for modular arithmetic
-	seedInt := new(big.Int).SetBytes(seedHash)
-
-	for len(selected) < subsetSize && len(selected) < len(validators) {
-		// Generate deterministic index
-		indexBig := new(big.Int).Mod(seedInt, big.NewInt(int64(len(validators))))
-		index := int(indexBig.Int64())
-
-		validator := validators[index]
-		if !used[validator.OperatorAddress] {
-			selected = append(selected, validator)
-			used[validator.OperatorAddress] = true
-		}
-
-		// Update seed for next iteration
-		hasher.Reset()
-		hasher.Write(seedInt.Bytes())
-		hasher.Write([]byte(strconv.Itoa(len(selected))))
-		seedInt = new(big.Int).SetBytes(hasher.Sum(nil))
-	}
-
-	// Sort selected validators by operator address for consistency
-	sort.Slice(selected, func(i, j int) bool {
-		return selected[i].OperatorAddress < selected[j].OperatorAddress
-	})
-
-	return selected
-}
-
-
 // GetValidatorSubsetInfo returns formatted information about the validator subset
 func (vs *ValidatorSelector) GetValidatorSubsetInfo(result *SelectionResult) string {
-	info := "Subset validators:\n"
-
+	info := fmt.Sprintf("Validator Selection Summary:\n")
+	info += fmt.Sprintf("  Total validators selected: %d\n", len(result.ValidatorSubset))
+	info += fmt.Sprintf("  Total voting power: %s\n", result.TotalVotingPower.String())
+	info += fmt.Sprintf("  Subset voting power: %s\n", result.SubsetVotingPower.String())
+	
+	// Calculate actual percentage
+	if result.TotalVotingPower.Cmp(big.NewInt(0)) > 0 {
+		percentage := new(big.Float).Quo(
+			new(big.Float).SetInt(result.SubsetVotingPower),
+			new(big.Float).SetInt(result.TotalVotingPower),
+		)
+		percentageFloat, _ := percentage.Float64()
+		info += fmt.Sprintf("  Actual voting power percentage: %.2f%%\n", percentageFloat*100)
+	}
+	
+	info += fmt.Sprintf("  Target threshold: %.2f%%\n", result.VotingPowerThreshold*100)
+	info += fmt.Sprintf("  Local validator selected: %v\n\n", result.ShouldOptIn)
+	
+	info += "Selected validators:\n"
 	for i, v := range result.ValidatorSubset {
 		marker := ""
 		if v.IsLocal {
 			marker = " (LOCAL)"
 		}
-		info += fmt.Sprintf("  %d. %s - %s%s\n", i+1, v.Moniker, v.OperatorAddress, marker)
+		info += fmt.Sprintf("  %d. %s - Power: %s%s\n", i+1, v.Moniker, v.VotingPower.String(), marker)
 	}
 
 	return info
@@ -235,40 +293,35 @@ func (vs *ValidatorSelector) GetFromKey() string {
 	return vs.localKey
 }
 
+// GetAllValidators returns all bonded validators
+func (vs *ValidatorSelector) GetAllValidators(ctx context.Context) ([]ValidatorInfo, error) {
+	return vs.getBondedValidators()
+}
+
 // GetValidatorAddress returns the validator address for the local key
 func (vs *ValidatorSelector) GetValidatorAddress() string {
 	// Get the validator info for the local key
 	validators, err := vs.getBondedValidators()
 	if err != nil {
-		log.Printf("Failed to get validators: %v", err)
-		return ""
+		log.Fatalf("Failed to get validators: %v", err)
 	}
-	
+
 	for _, val := range validators {
-		if val.Moniker == vs.localKey {
+		if val.IsLocal {
 			return val.OperatorAddress
 		}
 	}
-	
-	// If not found by moniker, return the key itself (might be an address)
-	return vs.localKey
+
+	log.Fatalf("Local validator not found in bonded validators set")
+	return "" // unreachable
 }
 
 // GetAccountAddress returns the account address for the local key
 // This is the address used for transactions (cosmos1...)
 func (vs *ValidatorSelector) GetAccountAddress() string {
-	// For now, we'll need to derive this or look it up
-	// In a real implementation, this would query the chain or use the keyring
-	// Since we're using test keyring with known keys, we can hardcode for now
-	switch vs.localKey {
-	case "alice":
-		return "cosmos1zaavvzxez0elundtn32qnk9lkm8kmcszzsv80v"
-	case "bob":
-		return "cosmos1yxgfnpk2u6h9prhhukcunszcwc277s2cwpds6u"
-	case "charlie":
-		return "cosmos1pz2trypc6e25hcwzn4h7jyqc57cr0qg4wrua28"
-	default:
-		// Assume the local key is already an address
-		return vs.localKey
+	addr, err := vs.getLocalAccountAddress()
+	if err != nil {
+		log.Fatalf("Failed to get local account address: %v", err)
 	}
+	return addr
 }

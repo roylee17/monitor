@@ -1,0 +1,52 @@
+# Testnet-specific values for ics-validator
+# This file contains common settings for testnet deployments
+
+# Use the standard test mnemonic
+keys:
+  type: "mnemonic"
+  mnemonic: "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host"
+
+# Testnet mode enabled
+testnet:
+  enabled: true
+  kindCluster: true
+  useDockerInternal: true
+
+# Use NodePort for Kind clusters
+service:
+  type: NodePort
+
+# Don't use persistent storage for testnet
+storage:
+  validator:
+    size: ""
+  monitor:
+    size: ""
+
+# Lower resource requirements for testnet
+resources:
+  validator:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  monitor:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+
+# Disable pod security restrictions for testnet
+podSecurityContext:
+  fsGroup: 1000
+  runAsUser: 1000
+  runAsNonRoot: false
+
+# Allow privilege escalation for init containers
+securityContext:
+  allowPrivilegeEscalation: true
+  readOnlyRootFilesystem: false

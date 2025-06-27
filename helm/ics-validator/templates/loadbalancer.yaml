@@ -1,0 +1,34 @@
+{{- if .Values.monitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: p2p-loadbalancer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: p2p-gateway
+    app.kubernetes.io/managed-by: ics-monitor
+  {{- with .Values.loadBalancer.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: LoadBalancer
+  # No selector here - we use EndpointSlices for dynamic routing
+  # This prevents automatic endpoint discovery
+  selector:
+    this-will-not-match: anything
+  # Start with a placeholder port - monitor will patch this service dynamically
+  ports:
+  - name: placeholder
+    port: 1
+    targetPort: 1
+    protocol: TCP
+  {{- if .Values.loadBalancer.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.loadBalancer.loadBalancerIP }}
+  {{- end }}
+  {{- if .Values.loadBalancer.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.loadBalancer.loadBalancerSourceRanges | nindent 2 }}
+  {{- end }}
+{{- end }}

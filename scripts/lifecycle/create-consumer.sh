@@ -171,6 +171,11 @@ main() {
     parse_arguments "$@"
     
     # Get validator pod
+    # Since we're in multi-cluster setup, use the cluster specified or default to alice
+    local cluster="${CLUSTER:-alice}"
+    export KUBECONFIG="${HOME}/.kube/config"
+    kubectl config use-context "kind-${cluster}-cluster" >/dev/null 2>&1
+    
     local pod=$(get_validator_pod)
     if [ -z "$pod" ]; then
         exit 1

@@ -1,0 +1,203 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: validator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ics-validator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: validator
+  template:
+    metadata:
+      labels:
+        {{- include "ics-validator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: validator
+        validator: {{ .Values.validator.name }}
+        role: validator
+    spec:
+      serviceAccountName: {{ include "ics-validator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+      {{- if eq .Values.chain.genesis.type "url" }}
+      - name: fetch-genesis
+        image: busybox:latest
+        command: ["/bin/sh", "/scripts/fetch-genesis.sh"]
+        volumeMounts:
+        - name: genesis-config
+          mountPath: /scripts
+        - name: genesis-data
+          mountPath: /genesis
+      {{- end }}
+      - name: init-validator
+        image: {{ .Values.chain.image }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "Initializing validator {{ .Values.validator.name }}"
+          
+          # Create base directory
+          mkdir -p /chain/.provider
+          
+          # Initialize chain
+          {{ .Values.chain.binary }} init "{{ .Values.validator.moniker }}" \
+            --chain-id {{ .Values.chain.id }} \
+            --home /chain/.provider
+          
+          # Verify directories were created
+          echo "Checking directory structure:"
+          ls -la /chain/.provider/
+          
+          # Copy genesis
+          {{- if eq .Values.chain.genesis.type "url" }}
+          cp /genesis/genesis.json /chain/.provider/config/genesis.json
+          {{- else if eq .Values.chain.genesis.type "inline" }}
+          cp /genesis-config/genesis.json /chain/.provider/config/genesis.json
+          {{- else if eq .Values.chain.genesis.type "existing-configmap" }}
+          cp /genesis-external/genesis.json /chain/.provider/config/genesis.json
+          {{- end }}
+          
+          # Handle keys based on type
+          {{- if eq .Values.keys.type "mnemonic" }}
+          # Import validator key from mnemonic
+          echo "Importing validator key from mnemonic"
+          echo "{{ .Values.keys.mnemonic }}" | {{ .Values.chain.binary }} keys add {{ .Values.validator.name }} \
+            --recover \
+            --keyring-backend test \
+            --home /chain/.provider \
+            --hd-path "{{ include "ics-validator.hdPath" . }}"
+          
+          # Generate node key and validator key
+          {{ .Values.chain.binary }} init temp --home /tmp/temp 2>/dev/null || true
+          cp /tmp/temp/config/node_key.json /chain/.provider/config/
+          cp /tmp/temp/config/priv_validator_key.json /chain/.provider/config/
+          rm -rf /tmp/temp
+          {{- else if eq .Values.keys.type "explicit" }}
+          # Copy explicit keys
+          cp /keys/priv_validator_key.json /chain/.provider/config/
+          cp /keys/node_key.json /chain/.provider/config/
+          
+          # Import key to keyring (using standard test mnemonic)
+          echo "Importing key to keyring for operations"
+          echo "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" | \
+            {{ .Values.chain.binary }} keys add {{ .Values.validator.name }} \
+            --recover \
+            --keyring-backend test \
+            --home /chain/.provider \
+            --hd-path "{{ include "ics-validator.hdPath" . }}"
+          {{- else if eq .Values.keys.type "existing-secret" }}
+          # Copy from existing secret
+          cp /keys-external/priv_validator_key.json /chain/.provider/config/
+          cp /keys-external/node_key.json /chain/.provider/config/
+          {{- end }}
+          
+          # Configure peers
+          PEERS="{{ include "ics-validator.persistentPeers" . }}"
+          SEEDS="{{ include "ics-validator.seeds" . }}"
+          
+          sed -i "s/persistent_peers = \"\"/persistent_peers = \"$PEERS\"/" /chain/.provider/config/config.toml
+          sed -i "s/seeds = \"\"/seeds = \"$SEEDS\"/" /chain/.provider/config/config.toml
+          
+          # Network configuration
+          sed -i 's/addr_book_strict = true/addr_book_strict = false/' /chain/.provider/config/config.toml
+          {{- if .Values.testnet.kindCluster }}
+          sed -i 's/allow_duplicate_ip = false/allow_duplicate_ip = true/' /chain/.provider/config/config.toml
+          {{- end }}
+          
+          # Enable RPC
+          sed -i 's/127.0.0.1:26657/0.0.0.0:26657/' /chain/.provider/config/config.toml
+          
+          # Enable API
+          sed -i 's/enable = false/enable = true/' /chain/.provider/config/app.toml
+          sed -i 's/address = "tcp:\/\/localhost:1317"/address = "tcp:\/\/0.0.0.0:1317"/' /chain/.provider/config/app.toml
+          
+          # Enable gRPC
+          sed -i 's/localhost:9090/0.0.0.0:9090/' /chain/.provider/config/app.toml
+          sed -i 's/localhost:9091/0.0.0.0:9091/' /chain/.provider/config/app.toml
+          
+          # Set proper permissions
+          chown -R 1000:1000 /chain/.provider
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: chain-data
+          mountPath: /chain/.provider
+        - name: genesis-config
+          mountPath: /genesis-config
+        {{- if eq .Values.chain.genesis.type "url" }}
+        - name: genesis-data
+          mountPath: /genesis
+        {{- end }}
+        {{- if eq .Values.chain.genesis.type "existing-configmap" }}
+        - name: genesis-external
+          mountPath: /genesis-external
+        {{- end }}
+        {{- if ne .Values.keys.type "existing-secret" }}
+        - name: keys
+          mountPath: /keys
+        {{- else }}
+        - name: keys-external
+          mountPath: /keys-external
+        {{- end }}
+      containers:
+      - name: validator
+        image: {{ .Values.chain.image }}
+        command: ["{{ .Values.chain.binary }}", "start", "--home", "/chain/.provider"]
+        ports:
+        - name: p2p
+          containerPort: 26656
+          protocol: TCP
+        - name: rpc
+          containerPort: 26657
+          protocol: TCP
+        - name: api
+          containerPort: 1317
+          protocol: TCP
+        - name: grpc
+          containerPort: 9090
+          protocol: TCP
+        - name: grpc-web
+          containerPort: 9091
+          protocol: TCP
+        resources:
+          {{- toYaml .Values.resources.validator | nindent 10 }}
+        volumeMounts:
+        - name: chain-data
+          mountPath: /chain/.provider
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+      volumes:
+      - name: chain-data
+        {{- if .Values.storage.validator.size }}
+        persistentVolumeClaim:
+          claimName: {{ include "ics-validator.fullname" . }}-validator-data
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      - name: genesis-config
+        configMap:
+          name: {{ include "ics-validator.fullname" . }}-genesis
+      {{- if eq .Values.chain.genesis.type "url" }}
+      - name: genesis-data
+        emptyDir: {}
+      {{- end }}
+      {{- if eq .Values.chain.genesis.type "existing-configmap" }}
+      - name: genesis-external
+        configMap:
+          name: {{ .Values.chain.genesis.configMapName }}
+      {{- end }}
+      {{- if ne .Values.keys.type "existing-secret" }}
+      - name: keys
+        secret:
+          secretName: {{ include "ics-validator.fullname" . }}-keys
+      {{- else }}
+      - name: keys-external
+        secret:
+          secretName: {{ .Values.keys.secretName }}
+      {{- end }}

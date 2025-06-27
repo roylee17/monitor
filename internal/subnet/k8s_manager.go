@@ -2,6 +2,7 @@ package subnet
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,54 +19,47 @@ import (
 
 // K8sManager extends the traditional subnet manager with Kubernetes deployment capabilities
 type K8sManager struct {
-	*Manager       // Embed the original manager for file-based operations
-	deployer       *deployment.K8sDeployer
-	hermesDeployer *deployment.HermesDeployer
-	logger         *slog.Logger
+	*Manager // Embed the original manager for file-based operations
+	deployer *deployment.K8sDeployer
+	logger   *slog.Logger
 
 	// Configuration
-	namespacePrefix string // Prefix for consumer chain namespaces (e.g., "alice", "bob")
 	consumerImage   string
 	defaultReplicas int32
 	validatorName   string
-	
+
 	// Peer discovery
-	peerDiscovery   *SimplePeerDiscovery
-	deterministicPeerDiscovery *DeterministicPeerDiscovery
+	peerDiscovery *PeerDiscovery
+	
+	// LoadBalancer management
+	lbManager *LoadBalancerManager
 }
 
 // NewK8sManager creates a new Kubernetes-aware subnet manager
-func NewK8sManager(baseManager *Manager, logger *slog.Logger, namespacePrefix, consumerImage, validatorName string) (*K8sManager, error) {
+func NewK8sManager(baseManager *Manager, logger *slog.Logger, consumerImage, validatorName string) (*K8sManager, error) {
 	// Create deployer with empty namespace - we'll set it per deployment
 	deployer, err := deployment.NewK8sDeployer(logger, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create K8s deployer: %w", err)
 	}
 
-	// Get the same clientset for Hermes deployer
-	clientset := deployer.GetClientset()
-	hermesDeployer := deployment.NewHermesDeployer(logger, clientset)
-
+	// Create LoadBalancer manager
+	lbManager := NewLoadBalancerManager(deployer.GetClientset(), logger)
+	
 	return &K8sManager{
 		Manager:         baseManager,
 		deployer:        deployer,
-		hermesDeployer:  hermesDeployer,
 		logger:          logger,
-		namespacePrefix: namespacePrefix,
 		consumerImage:   consumerImage,
 		defaultReplicas: 1,
 		validatorName:   validatorName,
+		lbManager:       lbManager,
 	}, nil
 }
 
 // SetPeerDiscovery sets the peer discovery service
-func (m *K8sManager) SetPeerDiscovery(pd *SimplePeerDiscovery) {
+func (m *K8sManager) SetPeerDiscovery(pd *PeerDiscovery) {
 	m.peerDiscovery = pd
-}
-
-// SetDeterministicPeerDiscovery sets the deterministic peer discovery service
-func (m *K8sManager) SetDeterministicPeerDiscovery(pd *DeterministicPeerDiscovery) {
-	m.deterministicPeerDiscovery = pd
 }
 
 // GetClientset returns the Kubernetes clientset from the deployer
@@ -76,15 +70,36 @@ func (m *K8sManager) GetClientset() kubernetes.Interface {
 	return nil
 }
 
-// getNamespaceForChain returns the namespace for a specific consumer chain
-func (m *K8sManager) getNamespaceForChain(chainID string) string {
-	if m.namespacePrefix == "" {
-		return chainID
+// GetNamespaceForChain returns the namespace for a specific consumer chain
+// Since each validator runs in its own cluster, we just use the chainID as namespace
+func (m *K8sManager) GetNamespaceForChain(chainID string) string {
+	// No need for prefix since each validator has its own cluster
+	return chainID
+}
+
+// DeployConsumer deploys a consumer chain using the simplified configuration struct
+func (m *K8sManager) DeployConsumer(ctx context.Context, config *ConsumerDeploymentConfig) error {
+	// Validate configuration
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
 	}
-	return fmt.Sprintf("%s-%s", m.namespacePrefix, chainID)
+
+	// Apply defaults
+	config.SetDefaults()
+
+	// Handle dynamic peers if requested
+	if config.UseDynamicPeers {
+		return m.DeployConsumerWithDynamicPeersAndKey(ctx, config.ChainID, config.ConsumerID,
+			*config.Ports, config.CCVPatch, config.ConsumerKey)
+	}
+
+	// Use the existing implementation
+	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, config.ChainID, config.ConsumerID,
+		*config.Ports, config.Peers, config.CCVPatch, config.NodeKeyJSON, config.ConsumerKey)
 }
 
 // DeployConsumerChain orchestrates the full consumer chain deployment workflow
+// Deprecated: Use DeployConsumer with ConsumerDeploymentConfig instead
 func (m *K8sManager) DeployConsumerChain(ctx context.Context, chainID, consumerID string) error {
 	m.logger.Info("Starting consumer chain deployment workflow",
 		"chain_id", chainID,
@@ -103,7 +118,7 @@ func (m *K8sManager) DeployConsumerChain(ctx context.Context, chainID, consumerI
 		return fmt.Errorf("failed to deploy to Kubernetes: %w", err)
 	}
 
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	m.logger.Info("Consumer chain deployment workflow completed",
 		"chain_id", chainID,
 		"namespace", namespace)
@@ -121,11 +136,12 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 	m.logger.Info("Preparing pre-CCV genesis", "chain_id", chainID)
 
 	// Create pre-CCV genesis with funded relayer account
-	relayerAddr := GenerateRelayerAddress(m.validatorName, chainID)
+	// Using the well-known test mnemonic relayer address
+	relayerAddr := "consumer1r5v5srda7xfth3hn2s26txvrcrntldjumt8mhl"
 	relayerAccounts := []RelayerAccount{
 		{
 			Address: relayerAddr,
-			Coins:   sdk.NewCoins(sdk.NewCoin("stake", math.NewInt(10000000))), // 10 STAKE
+			Coins:   sdk.NewCoins(sdk.NewCoin(DefaultDenom, math.NewInt(DefaultRelayerFunds))), // 100M
 		},
 	}
 
@@ -161,7 +177,7 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 
 // deployToKubernetes handles the Kubernetes deployment phase
 func (m *K8sManager) deployToKubernetes(ctx context.Context, chainID, consumerID string) error {
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	m.logger.Info("Deploying consumer chain to Kubernetes",
 		"chain_id", chainID,
 		"namespace", namespace)
@@ -188,6 +204,7 @@ func (m *K8sManager) deployToKubernetes(ctx context.Context, chainID, consumerID
 		P2PPort:  26656,
 		RPCPort:  26657,
 		RESTPort: 1317,
+		GRPCPort: 9090,
 
 		// Consumer chain configuration
 		ConsumerConfig: deployment.ConsumerChainConfig{
@@ -239,7 +256,7 @@ func (m *K8sManager) ApplyCCVGenesisAndRedeploy(ctx context.Context, chainID str
 func (m *K8sManager) restartConsumerDeployment(ctx context.Context, chainID string) error {
 	m.logger.Info("Restarting consumer deployment to apply genesis changes", "chain_id", chainID)
 
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	// Add restart annotation to trigger rolling update
 	if err := m.deployer.RestartDeployment(ctx, chainID, namespace); err != nil {
 		return fmt.Errorf("failed to restart deployment: %w", err)
@@ -256,92 +273,15 @@ func (m *K8sManager) restartConsumerDeployment(ctx context.Context, chainID stri
 
 // GetConsumerChainStatus returns the status of a consumer chain
 func (m *K8sManager) GetConsumerChainStatus(ctx context.Context, chainID string) (*deployment.ConsumerChainStatus, error) {
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	return m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
-}
-
-// StartHermes deploys and starts the Hermes relayer for the consumer chain
-func (m *K8sManager) StartHermes(ctx context.Context, chainID string) error {
-	m.logger.Info("Starting Hermes relayer deployment", "chain_id", chainID)
-
-	namespace := m.getNamespaceForChain(chainID)
-	// Generate Hermes configuration
-	providerRPC := "http://validator-alice.provider.svc.cluster.local:26657"
-	consumerRPC := fmt.Sprintf("http://%s.%s.svc.cluster.local:26657", chainID, namespace)
-
-	configPath, err := m.hermesManager.GenerateConfig(chainID, chainID, providerRPC, consumerRPC)
-	if err != nil {
-		return fmt.Errorf("failed to generate Hermes config: %w", err)
-	}
-
-	// Read the generated config
-	configData, err := m.readHermesConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read Hermes config: %w", err)
-	}
-
-	// Deploy Hermes to Kubernetes
-	if err := m.hermesDeployer.DeployHermes(ctx, "provider-1", chainID, namespace, configData); err != nil {
-		return fmt.Errorf("failed to deploy Hermes: %w", err)
-	}
-
-	// Wait for Hermes to be ready
-	if err := m.waitForHermesReady(ctx, chainID); err != nil {
-		return fmt.Errorf("Hermes failed to become ready: %w", err)
-	}
-
-	m.logger.Info("Hermes relayer deployed successfully", "chain_id", chainID)
-
-	// TODO: Implement IBC path creation after Hermes is running
-	m.logger.Info("Note: IBC path creation must be done manually for now",
-		"next_steps", "hermes create channel --a-chain provider-1 --b-chain "+chainID)
-
-	return nil
-}
-
-// readHermesConfig reads the generated Hermes configuration file
-func (m *K8sManager) readHermesConfig(configPath string) ([]byte, error) {
-	// Read from the file system where hermesManager saved it
-	return os.ReadFile(configPath)
-}
-
-// waitForHermesReady waits for Hermes deployment to be ready
-func (m *K8sManager) waitForHermesReady(ctx context.Context, chainID string) error {
-	m.logger.Info("Waiting for Hermes to be ready", "chain_id", chainID)
-
-	namespace := m.getNamespaceForChain(chainID)
-	timeout := time.After(2 * time.Minute)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return fmt.Errorf("timeout waiting for Hermes to be ready")
-		case <-ticker.C:
-			status, err := m.hermesDeployer.GetHermesStatus(ctx, chainID, namespace)
-			if err != nil {
-				m.logger.Debug("Failed to get Hermes status", "error", err)
-				continue
-			}
-
-			if status.Ready {
-				m.logger.Info("Hermes is ready", "chain_id", chainID)
-				return nil
-			}
-
-			m.logger.Debug("Hermes not ready yet",
-				"ready_replicas", status.ReadyReplicas,
-				"total_replicas", status.Replicas)
-		}
-	}
 }
 
 // MonitorConsumerChainHealth monitors the health of deployed consumer chains
 func (m *K8sManager) MonitorConsumerChainHealth(ctx context.Context, chainID string) error {
 	m.logger.Info("Starting health monitoring for consumer chain", "chain_id", chainID)
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(DefaultTickerInterval)
 	defer ticker.Stop()
 
 	for {
@@ -407,7 +347,7 @@ func (m *K8sManager) JoinSubnetWithK8s(ctx context.Context, chainID string, netw
 	m.logger.Info("Joining subnet with Kubernetes deployment",
 		"chain_id", chainID)
 
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	// Deploy consumer chain
 	deploymentConfig := deployment.ConsumerDeployment{
 		ChainID:    chainID,
@@ -444,33 +384,47 @@ func (m *K8sManager) JoinSubnetWithK8s(ctx context.Context, chainID string, netw
 // DeployConsumerWithPorts deploys consumer chain with specific ports
 // DeployConsumerWithPorts deploys a consumer chain with specific port configuration
 // Deprecated: Use DeployConsumerWithPortsAndGenesis instead
-func (m *K8sManager) DeployConsumerWithPorts(ctx context.Context, chainID, consumerID string, ports ConsumerPorts, peers []string) error {
+func (m *K8sManager) DeployConsumerWithPorts(ctx context.Context, chainID, consumerID string, ports Ports, peers []string) error {
 	return m.DeployConsumerWithPortsAndGenesis(ctx, chainID, consumerID, ports, peers, nil)
 }
 
 // DeployConsumerWithPortsAndGenesis deploys a consumer chain with specific port configuration and CCV genesis
-func (m *K8sManager) DeployConsumerWithPortsAndGenesis(ctx context.Context, chainID, consumerID string, ports ConsumerPorts, peers []string, ccvPatch map[string]interface{}) error {
+func (m *K8sManager) DeployConsumerWithPortsAndGenesis(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}) error {
 	return m.DeployConsumerWithPortsAndGenesisForValidator(ctx, chainID, consumerID, "", ports, peers, ccvPatch)
 }
 
 // DeployConsumerWithPortsAndGenesisAndNodeKey deploys a consumer chain with specific port configuration, CCV genesis, and node key
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndNodeKey(ctx context.Context, chainID, consumerID string, ports ConsumerPorts, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
+func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndNodeKey(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
 	return m.DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx, chainID, consumerID, "", ports, peers, ccvPatch, nodeKeyJSON)
 }
 
 // DeployConsumerWithPortsAndGenesisForValidator deploys a consumer chain instance for a specific validator
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidator(ctx context.Context, chainID, consumerID, validatorName string, ports ConsumerPorts, peers []string, ccvPatch map[string]interface{}) error {
+func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidator(ctx context.Context, chainID, consumerID, validatorName string, ports Ports, peers []string, ccvPatch map[string]interface{}) error {
 	return m.DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx, chainID, consumerID, validatorName, ports, peers, ccvPatch, "")
 }
 
 // DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey deploys a consumer chain instance with all options
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx context.Context, chainID, consumerID, validatorName string, ports ConsumerPorts, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
+func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx context.Context, chainID, consumerID, validatorName string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
+	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON, nil)
+}
+
+// DeployConsumerWithPortsAndGenesisAndKeys deploys a consumer chain instance with all options including consumer key
+func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndKeys(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
+	// Determine validator name from consumer key or environment
+	validatorName := ""
+	if consumerKey != nil {
+		validatorName = consumerKey.ValidatorName
+	} else {
+		validatorName = os.Getenv("VALIDATOR_NAME")
+	}
+
 	m.logger.Info("Deploying consumer with specific ports",
 		"chain_id", chainID,
 		"consumer_id", consumerID,
 		"validator", validatorName,
 		"p2p_port", ports.P2P,
-		"rpc_port", ports.RPC)
+		"rpc_port", ports.RPC,
+		"has_consumer_key", consumerKey != nil)
 
 	// Calculate hashes for deployment metadata
 	subnetdHash, genesisHash, err := m.Manager.CalculateHashes()
@@ -480,8 +434,8 @@ func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ct
 		subnetdHash, genesisHash = "unknown", "unknown"
 	}
 
-	namespace := m.getNamespaceForChain(chainID)
-	// Create deployment configuration with deterministic ports
+	namespace := m.GetNamespaceForChain(chainID)
+	// Create deployment configuration with calculated ports
 	deploymentConfig := deployment.ConsumerDeployment{
 		ChainID:       chainID,
 		ConsumerID:    consumerID,
@@ -492,11 +446,11 @@ func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ct
 		SubnetdHash:   subnetdHash,
 		ValidatorName: validatorName, // Add validator name for unique deployment
 
-		// Use deterministic ports from peer discovery
-		P2PPort:  ports.P2P,
-		RPCPort:  ports.RPC,
-		RESTPort: ports.API,
-		GRPCPort: ports.GRPC,
+		// Use calculated ports
+		P2PPort:  int32(ports.P2P),
+		RPCPort:  int32(ports.RPC),
+		RESTPort: int32(ports.RPC + 660), // API port is RPC + 660
+		GRPCPort: int32(ports.GRPC),
 
 		// Set persistent peers
 		PersistentPeers: strings.Join(peers, ","),
@@ -512,9 +466,47 @@ func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ct
 
 		// CCV Genesis patch
 		CCVPatch: ccvPatch,
-		
+
 		// Deterministic node key
 		NodeKeyJSON: nodeKeyJSON,
+
+		// NodePort configuration for cross-cluster connectivity
+		// Each validator needs unique NodePorts
+		NodePorts: struct {
+			P2P  int
+			RPC  int
+			GRPC int
+		}{
+			P2P:  int(CalculateValidatorNodePort(chainID, validatorName)),
+			RPC:  int(CalculateValidatorNodePort(chainID, validatorName)) + 1,
+			GRPC: int(CalculateValidatorNodePort(chainID, validatorName)) + 2,
+		},
+	}
+
+	// Add consumer validator key if provided
+	if consumerKey != nil && len(consumerKey.PrivateKey) > 0 {
+		// Create the priv_validator_key.json structure
+		privKeyJSON := map[string]interface{}{
+			"address": consumerKey.ConsumerAddress,
+			"pub_key": map[string]interface{}{
+				"type":  "tendermint/PubKeyEd25519",
+				"value": base64.StdEncoding.EncodeToString(consumerKey.PrivateKey[32:]), // Ed25519 public key is last 32 bytes
+			},
+			"priv_key": map[string]interface{}{
+				"type":  "tendermint/PrivKeyEd25519",
+				"value": base64.StdEncoding.EncodeToString(consumerKey.PrivateKey), // Full 64 bytes
+			},
+		}
+
+		privKeyData, err := json.Marshal(privKeyJSON)
+		if err != nil {
+			return fmt.Errorf("failed to marshal consumer key: %w", err)
+		}
+
+		deploymentConfig.ConsumerKeyJSON = string(privKeyData)
+		m.logger.Info("Including consumer validator key in deployment",
+			"validator", validatorName,
+			"consumer_id", consumerID)
 	}
 
 	// Debug logging
@@ -530,6 +522,79 @@ func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ct
 	// Deploy to Kubernetes
 	if err := m.deployer.DeployConsumerChain(ctx, deploymentConfig); err != nil {
 		return fmt.Errorf("failed to deploy consumer chain: %w", err)
+	}
+
+	// Wait for pod to be ready and configure LoadBalancer
+	m.logger.Info("Waiting for consumer pod to be ready for LoadBalancer configuration",
+		"chain_id", chainID)
+	
+	// Retry for up to 60 seconds
+	maxRetries := 12
+	retryInterval := 5 * time.Second
+	var podIP string
+	
+	for i := 0; i < maxRetries; i++ {
+		// Get consumer chain status
+		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
+		if err != nil {
+			m.logger.Warn("Failed to get consumer chain status, will retry",
+				"chain_id", chainID,
+				"attempt", i+1,
+				"error", err)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		// Look for a ready pod
+		for _, pod := range status.Pods {
+			if pod.Ready && pod.PodIP != "" {
+				podIP = pod.PodIP
+				break
+			}
+		}
+
+		if podIP != "" {
+			break
+		}
+
+		m.logger.Info("Consumer pod not ready yet, waiting...",
+			"chain_id", chainID,
+			"attempt", i+1,
+			"max_attempts", maxRetries)
+		time.Sleep(retryInterval)
+	}
+
+	if podIP == "" {
+		// Even after retries, no pod is ready
+		m.logger.Warn("Consumer pod still not ready after retries, LoadBalancer configuration deferred",
+			"chain_id", chainID)
+		// Start a goroutine to configure LoadBalancer later
+		go m.configureLoadBalancerWhenReady(ctx, chainID, namespace, ports.P2P)
+	} else {
+		// Configure LoadBalancer for this consumer chain
+		calculatedPort := ports.P2P
+		
+		// Add port to LoadBalancer
+		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(calculatedPort)); err != nil {
+			m.logger.Error("Failed to add port to LoadBalancer", 
+				"chain_id", chainID,
+				"port", calculatedPort,
+				"error", err)
+			// Don't fail deployment, but log the error
+		}
+		
+		// Create EndpointSlice for LoadBalancer routing (using modern API)
+		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(calculatedPort)); err != nil {
+			m.logger.Error("Failed to create EndpointSlice for LoadBalancer",
+				"chain_id", chainID,
+				"error", err)
+			// Don't fail deployment, but log the error
+		}
+		
+		m.logger.Info("LoadBalancer configured for consumer chain",
+			"chain_id", chainID,
+			"port", calculatedPort,
+			"pod_ip", podIP)
 	}
 
 	m.logger.Info("Consumer chain deployed with stateless peer discovery successfully",
@@ -557,11 +622,23 @@ func (m *K8sManager) StopConsumerChain(ctx context.Context, chainID string) erro
 func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) error {
 	m.logger.Info("Removing consumer chain", "chain_id", chainID)
 
-	namespace := m.getNamespaceForChain(chainID)
-	// Delete Hermes relayer if it exists
-	if err := m.hermesDeployer.DeleteHermes(ctx, chainID, namespace); err != nil {
-		m.logger.Warn("Failed to delete Hermes deployment", "error", err)
-		// Continue with consumer chain removal even if Hermes deletion fails
+	// Calculate port to remove from LoadBalancer
+	ports, err := CalculatePorts(chainID)
+	if err == nil {
+		// Remove port from LoadBalancer
+		if err := m.lbManager.RemoveConsumerPort(ctx, chainID, int32(ports.P2P)); err != nil {
+			m.logger.Error("Failed to remove port from LoadBalancer", 
+				"chain_id", chainID,
+				"port", ports.P2P,
+				"error", err)
+		}
+		
+		// Delete EndpointSlice
+		if err := m.lbManager.DeleteEndpointSlice(ctx, chainID); err != nil {
+			m.logger.Error("Failed to delete EndpointSlice", 
+				"chain_id", chainID,
+				"error", err)
+		}
 	}
 
 	// Delete all Kubernetes resources
@@ -582,7 +659,7 @@ func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) er
 // ConsumerDeploymentExists checks if a consumer chain deployment exists
 func (m *K8sManager) ConsumerDeploymentExists(ctx context.Context, chainID string) (bool, error) {
 	// Use the deployer to check if deployment exists in the chain-specific namespace
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	return m.deployer.DeploymentExistsInNamespace(ctx, chainID, namespace)
 }
 
@@ -623,9 +700,9 @@ func (m *K8sManager) updateConsumerGenesisConfigMap(ctx context.Context, chainID
 		return fmt.Errorf("failed to marshal CCV patch: %w", err)
 	}
 
-	namespace := m.getNamespaceForChain(chainID)
+	namespace := m.GetNamespaceForChain(chainID)
 	// Update the ConfigMap through the deployer
-	configMapName := fmt.Sprintf("%s-config", chainID)
+	configMapName := fmt.Sprintf(ConfigMapNameFormat, chainID)
 	if err := m.deployer.UpdateConfigMap(ctx, namespace, configMapName, map[string]string{
 		"ccv-patch.json": string(ccvPatchJSON),
 	}); err != nil {
@@ -640,8 +717,8 @@ func (m *K8sManager) updateConsumerGenesisConfigMap(ctx context.Context, chainID
 func (m *K8sManager) RestartDeployment(ctx context.Context, chainID string) error {
 	m.logger.Info("Restarting consumer chain deployment", "chain_id", chainID)
 
-	namespace := m.getNamespaceForChain(chainID)
-	deploymentName := fmt.Sprintf("%s-consumer", chainID)
+	namespace := m.GetNamespaceForChain(chainID)
+	deploymentName := chainID // No suffix, matching createConsumerDeployment
 	return m.deployer.RestartDeployment(ctx, deploymentName, namespace)
 }
 
@@ -649,10 +726,10 @@ func (m *K8sManager) RestartDeployment(ctx context.Context, chainID string) erro
 func (m *K8sManager) waitForDeploymentReady(ctx context.Context, chainID string) error {
 	m.logger.Info("Waiting for deployment to become ready", "chain_id", chainID)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(DefaultPollInterval)
 	defer ticker.Stop()
 
-	timeout := time.After(2 * time.Minute)
+	timeout := time.After(DefaultDeployTimeout)
 
 	for {
 		select {
@@ -683,89 +760,158 @@ func (m *K8sManager) waitForDeploymentReady(ctx context.Context, chainID string)
 }
 
 // DeployConsumerWithDynamicPeers deploys a consumer chain with dynamically discovered peers
-func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID, consumerID string, ports ConsumerPorts, ccvPatch map[string]interface{}) error {
+func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}) error {
 	return m.DeployConsumerWithDynamicPeersAndKey(ctx, chainID, consumerID, ports, ccvPatch, nil)
 }
 
 // DeployConsumerWithDynamicPeersAndKey deploys a consumer chain with dynamically discovered peers and optional consumer key
-func (m *K8sManager) DeployConsumerWithDynamicPeersAndKey(ctx context.Context, chainID, consumerID string, ports ConsumerPorts, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo) error {
+func (m *K8sManager) DeployConsumerWithDynamicPeersAndKey(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo) error {
+	return m.DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx, chainID, consumerID, ports, ccvPatch, consumerKey, nil)
+}
+
+// DeployConsumerWithDynamicPeersAndKeyAndValidators deploys a consumer chain with dynamically discovered peers, optional consumer key, and explicit validator list
+func (m *K8sManager) DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo, actualOptedInValidators []string) error {
 	m.logger.Info("Deploying consumer with dynamic peer discovery",
 		"chain_id", chainID,
 		"consumer_id", consumerID)
 
-	// Discover peers using deterministic peer discovery if configured
+	// Discover peers using peer discovery if configured
 	var peers []string
 	var nodeKeyJSON string
-	
-	if m.deterministicPeerDiscovery != nil {
-		// Get the list of opted-in validators from the CCV patch
+
+	if m.peerDiscovery != nil {
+		// Get the list of opted-in validators
 		var optedInValidators []string
-		if ccvPatch != nil {
-			if appState, ok := ccvPatch["app_state"].(map[string]interface{}); ok {
-				if ccvConsumer, ok := appState["ccvconsumer"].(map[string]interface{}); ok {
-					if provider, ok := ccvConsumer["provider"].(map[string]interface{}); ok {
-						if initialValSet, ok := provider["initial_val_set"].([]interface{}); ok {
-							for range initialValSet {
-								// Extract moniker from the validator
-								// Note: This is a simplified approach - in production you'd map consensus keys to monikers
-								optedInValidators = append(optedInValidators, "alice", "bob", "charlie")
-								break // For now, just use all validators
-							}
-						}
-					}
-				}
-			}
-		}
 		
-		// Fallback to all validators if we couldn't extract from CCV patch
+		// First priority: Use explicitly provided validators
+		if len(actualOptedInValidators) > 0 {
+			optedInValidators = actualOptedInValidators
+			m.logger.Info("Using explicitly provided opted-in validators",
+				"consumer_id", consumerID,
+				"validators", optedInValidators)
+		} else {
+			// DO NOT extract validators from CCV patch
+			// The CCV patch contains validators selected by the subset algorithm,
+			// NOT the validators that actually opted in.
+			// The initial_val_set is determined at consumer creation time,
+			// but opt-ins happen after that.
+			m.logger.Info("Not using CCV patch for validator discovery",
+				"reason", "CCV patch contains selected validators, not opted-in validators")
+		}
+
+		// If we don't have validators from the CCV patch, that's fine
+		// The actual peers will be discovered from running deployments
 		if len(optedInValidators) == 0 {
-			optedInValidators = []string{"alice", "bob", "charlie"}
+			m.logger.Info("No validators found in CCV patch, will discover peers from actual deployments",
+				"consumer_id", consumerID,
+				"chain_id", chainID)
 		}
-		
-		// Discover peers with deterministic node IDs
-		discoveredPeers, err := m.deterministicPeerDiscovery.DiscoverPeersWithChainID(ctx, consumerID, chainID, optedInValidators)
+
+		// Discover peers with node IDs
+		discoveredPeers, err := m.peerDiscovery.DiscoverPeersWithChainID(ctx, consumerID, chainID, optedInValidators)
 		if err != nil {
-			m.logger.Warn("Failed to discover peers with deterministic IDs, continuing without peers",
+			m.logger.Warn("Failed to discover peers, continuing without peers",
 				"error", err)
 			peers = []string{}
 		} else {
 			peers = discoveredPeers
-			m.logger.Info("Discovered peers with deterministic node IDs",
+			m.logger.Info("Discovered peers",
 				"chain_id", chainID,
 				"peer_count", len(peers),
 				"peers", peers)
 		}
-		
-		// Generate deterministic node key for this validator
-		nodeKeyBytes, err := m.deterministicPeerDiscovery.GetNodeKeyJSON(chainID)
+
+		// Generate node key for this validator
+		nodeKeyBytes, err := m.peerDiscovery.GetNodeKeyJSON(chainID)
 		if err != nil {
-			m.logger.Warn("Failed to generate deterministic node key",
+			m.logger.Warn("Failed to generate node key",
 				"error", err)
 		} else {
 			nodeKeyJSON = string(nodeKeyBytes)
-			m.logger.Info("Generated deterministic node key for consumer chain",
+			m.logger.Info("Generated node key for consumer chain",
 				"chain_id", chainID,
 				"validator", m.validatorName)
 		}
-	} else if m.peerDiscovery != nil {
-		// Fallback to simple peer discovery
-		discoveredPeers, err := m.peerDiscovery.DiscoverPeersWithChainID(ctx, consumerID, chainID)
-		if err != nil {
-			m.logger.Warn("Failed to discover peers dynamically, continuing without peers",
-				"error", err)
-			peers = []string{}
-		} else {
-			peers = discoveredPeers
-			m.logger.Info("Discovered peers for consumer chain",
-				"chain_id", chainID,
-				"peer_count", len(peers),
-				"peers", peers)
-		}
-	} else {
-		m.logger.Warn("No peer discovery configured, starting without peers")
-		peers = []string{}
 	}
 
-	// Deploy with discovered peers and deterministic node key
-	return m.DeployConsumerWithPortsAndGenesisAndNodeKey(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON)
+	// Deploy with discovered peers, node key, and consumer key
+	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON, consumerKey)
 }
+
+// EnsureLoadBalancerReady checks if the shared LoadBalancer is ready and returns its endpoint
+func (k *K8sManager) EnsureLoadBalancerReady(ctx context.Context) (string, error) {
+	return k.lbManager.EnsureLoadBalancerReady(ctx)
+}
+
+// configureLoadBalancerWhenReady is a background task that waits for consumer pod to be ready
+// and then configures the LoadBalancer
+func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID, namespace string, p2pPort int) {
+	m.logger.Info("Starting background LoadBalancer configuration task",
+		"chain_id", chainID)
+	
+	// Continue retrying for up to 5 minutes
+	maxRetries := 60
+	retryInterval := 5 * time.Second
+	
+	for i := 0; i < maxRetries; i++ {
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			m.logger.Info("LoadBalancer configuration cancelled",
+				"chain_id", chainID)
+			return
+		default:
+		}
+		
+		// Get consumer chain status
+		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
+		if err != nil {
+			m.logger.Warn("Failed to get consumer chain status in background task",
+				"chain_id", chainID,
+				"attempt", i+1,
+				"error", err)
+			time.Sleep(retryInterval)
+			continue
+		}
+		
+		// Look for a ready pod
+		var podIP string
+		for _, pod := range status.Pods {
+			if pod.Ready && pod.PodIP != "" {
+				podIP = pod.PodIP
+				break
+			}
+		}
+		
+		if podIP != "" {
+			// Configure LoadBalancer
+			if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(p2pPort)); err != nil {
+				m.logger.Error("Failed to add port to LoadBalancer in background task",
+					"chain_id", chainID,
+					"port", p2pPort,
+					"error", err)
+			} else {
+				// Create EndpointSlice for LoadBalancer routing (using modern API)
+				if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(p2pPort)); err != nil {
+					m.logger.Error("Failed to create EndpointSlice in background task",
+						"chain_id", chainID,
+						"error", err)
+				} else {
+					m.logger.Info("LoadBalancer configured successfully in background task",
+						"chain_id", chainID,
+						"port", p2pPort,
+						"pod_ip", podIP,
+						"attempt", i+1)
+				}
+			}
+			return
+		}
+		
+		time.Sleep(retryInterval)
+	}
+	
+	m.logger.Error("Failed to configure LoadBalancer after all retries",
+		"chain_id", chainID,
+		"max_retries", maxRetries)
+}
+

@@ -1,0 +1,24 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: alice-cluster
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30656
+    hostPort: 26656
+    protocol: TCP
+  - containerPort: 30657
+    hostPort: 26657
+    protocol: TCP
+  - containerPort: 31657
+    hostPort: 1317
+    protocol: TCP
+  - containerPort: 32090
+    hostPort: 9090
+    protocol: TCP
+  - containerPort: 32091
+    hostPort: 9091
+    protocol: TCP
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"

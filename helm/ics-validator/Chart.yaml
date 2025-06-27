@@ -1,0 +1,17 @@
+apiVersion: v2
+name: ics-validator
+description: A Helm chart for deploying an Interchain Security validator and monitor
+type: application
+version: 0.1.0
+appVersion: "v7.0.1"
+keywords:
+  - cosmos
+  - interchain-security
+  - validator
+  - monitor
+home: https://github.com/cosmos/interchain-security-monitor
+sources:
+  - https://github.com/cosmos/interchain-security-monitor
+maintainers:
+  - name: ICS Team
+    email: security@interchain.io

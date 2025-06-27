@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 )
 
 // ConsumerKeyStore manages consumer key assignments
+// Although each cluster runs only one validator, we still index by validator name
+// for clarity in logs and potential future multi-validator support
 type ConsumerKeyStore struct {
 	logger    *slog.Logger
 	clientset kubernetes.Interface
@@ -31,6 +34,7 @@ type ConsumerKeyInfo struct {
 	ConsumerAddress  string `json:"consumer_address"`
 	ProviderAddress  string `json:"provider_address"`
 	AssignmentHeight int64  `json:"assignment_height"`
+	PrivateKey       []byte `json:"-"` // Not serialized to ConfigMap
 }
 
 // NewConsumerKeyStore creates a new consumer key store
@@ -77,7 +81,7 @@ func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *ConsumerK
 		}
 	}
 
-	// Marshal key info
+	// Marshal key info (without private key due to json:"-" tag)
 	keyData, err := json.Marshal(info)
 	if err != nil {
 		return fmt.Errorf("failed to marshal key info: %w", err)
@@ -100,6 +104,65 @@ func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *ConsumerK
 		return fmt.Errorf("failed to store consumer key in ConfigMap: %w", err)
 	}
 
+	// Store private key in a Secret if provided
+	if len(info.PrivateKey) > 0 {
+		secretName := fmt.Sprintf("consumer-key-%s-%s", info.ConsumerID, info.ValidatorName)
+		
+		// Create the priv_validator_key.json structure
+		privKeyJSON := map[string]interface{}{
+			"address": info.ConsumerAddress,
+			"pub_key": map[string]interface{}{
+				"type":  "tendermint/PubKeyEd25519",
+				"value": base64.StdEncoding.EncodeToString(info.PrivateKey[32:]), // Ed25519 public key is last 32 bytes
+			},
+			"priv_key": map[string]interface{}{
+				"type":  "tendermint/PrivKeyEd25519", 
+				"value": base64.StdEncoding.EncodeToString(info.PrivateKey), // Full 64 bytes
+			},
+		}
+		
+		privKeyData, err := json.MarshalIndent(privKeyJSON, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal private key: %w", err)
+		}
+
+		// Create or update Secret
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: s.namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/component": "consumer-validator-key",
+					"consumer-id":                 info.ConsumerID,
+					"validator":                   info.ValidatorName,
+				},
+			},
+			Data: map[string][]byte{
+				"priv_validator_key.json": privKeyData,
+			},
+		}
+
+		_, err = s.clientset.CoreV1().Secrets(s.namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				_, err = s.clientset.CoreV1().Secrets(s.namespace).Create(ctx, secret, metav1.CreateOptions{})
+			} else {
+				return fmt.Errorf("failed to get secret: %w", err)
+			}
+		} else {
+			_, err = s.clientset.CoreV1().Secrets(s.namespace).Update(ctx, secret, metav1.UpdateOptions{})
+		}
+		
+		if err != nil {
+			return fmt.Errorf("failed to store private key in Secret: %w", err)
+		}
+		
+		s.logger.Info("Stored consumer private key in Secret",
+			"secret_name", secretName,
+			"consumer_id", info.ConsumerID,
+			"validator", info.ValidatorName)
+	}
+
 	s.logger.Info("Stored consumer key assignment",
 		"consumer_id", info.ConsumerID,
 		"validator", info.ValidatorName,
@@ -116,6 +179,15 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*Co
 	// Check cache first
 	if keys, ok := s.cache[consumerID]; ok {
 		if info, ok := keys[validatorName]; ok {
+			// If we have the info but no private key, try to load it from Secret
+			if len(info.PrivateKey) == 0 {
+				s.mu.RUnlock()
+				privKey, _ := s.loadPrivateKey(consumerID, validatorName)
+				s.mu.RLock()
+				if privKey != nil {
+					info.PrivateKey = privKey
+				}
+			}
 			return info, nil
 		}
 	}
@@ -132,6 +204,12 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*Co
 		var info ConsumerKeyInfo
 		if err := json.Unmarshal([]byte(keyData), &info); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal key info: %w", err)
+		}
+		
+		// Try to load private key from Secret
+		privKey, _ := s.loadPrivateKey(consumerID, validatorName)
+		if privKey != nil {
+			info.PrivateKey = privKey
 		}
 		
 		// Update cache
@@ -224,4 +302,42 @@ func (s *ConsumerKeyStore) LoadFromConfigMaps(ctx context.Context) error {
 		"consumer_count", len(s.cache))
 
 	return nil
+}
+
+// loadPrivateKey loads the private key from Secret
+func (s *ConsumerKeyStore) loadPrivateKey(consumerID, validatorName string) ([]byte, error) {
+	secretName := fmt.Sprintf("consumer-key-%s-%s", consumerID, validatorName)
+	
+	secret, err := s.clientset.CoreV1().Secrets(s.namespace).Get(context.Background(), secretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret: %w", err)
+	}
+	
+	privKeyData, ok := secret.Data["priv_validator_key.json"]
+	if !ok {
+		return nil, fmt.Errorf("priv_validator_key.json not found in secret")
+	}
+	
+	// Parse the JSON to extract the private key
+	var keyJSON map[string]interface{}
+	if err := json.Unmarshal(privKeyData, &keyJSON); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal private key JSON: %w", err)
+	}
+	
+	privKey, ok := keyJSON["priv_key"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("priv_key not found in JSON")
+	}
+	
+	privKeyBase64, ok := privKey["value"].(string)
+	if !ok {
+		return nil, fmt.Errorf("priv_key value not found")
+	}
+	
+	privKeyBytes, err := base64.StdEncoding.DecodeString(privKeyBase64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode private key: %w", err)
+	}
+	
+	return privKeyBytes, nil
 }

@@ -32,6 +32,67 @@ type Ports struct {
 	GRPCWeb int
 }
 
+// ReservedPortRange defines a range of reserved ports
+type ReservedPortRange struct {
+	Start int
+	End   int
+	Name  string
+}
+
+// Common reserved port ranges
+var ReservedPorts = []ReservedPortRange{
+	{Start: 0, End: 1023, Name: "System ports"},
+	{Start: 3000, End: 3000, Name: "Common development servers"},
+	{Start: 5432, End: 5432, Name: "PostgreSQL"},
+	{Start: 6379, End: 6379, Name: "Redis"},
+	{Start: 8080, End: 8080, Name: "HTTP alternate"},
+	{Start: 27017, End: 27017, Name: "MongoDB"},
+}
+
+// IsPortReserved checks if a port is in a reserved range
+func IsPortReserved(port int) (bool, string) {
+	for _, reserved := range ReservedPorts {
+		if port >= reserved.Start && port <= reserved.End {
+			return true, reserved.Name
+		}
+	}
+	return false, ""
+}
+
+// ValidatePorts checks if all ports are valid and not in reserved ranges
+func ValidatePorts(ports *Ports) error {
+	portChecks := []struct {
+		port int
+		name string
+	}{
+		{ports.P2P, "P2P"},
+		{ports.RPC, "RPC"},
+		{ports.GRPC, "gRPC"},
+		{ports.GRPCWeb, "gRPC-Web"},
+	}
+	
+	for _, check := range portChecks {
+		if check.port < 1024 || check.port > 65535 {
+			return fmt.Errorf("%s port %d is out of valid range (1024-65535)", check.name, check.port)
+		}
+		
+		if reserved, service := IsPortReserved(check.port); reserved {
+			return fmt.Errorf("%s port %d conflicts with reserved port for %s", check.name, check.port, service)
+		}
+	}
+	
+	// Check for internal collisions
+	portSet := make(map[int]string)
+	for _, check := range portChecks {
+		if existing, exists := portSet[check.port]; exists {
+			return fmt.Errorf("port collision: %s and %s both use port %d", existing, check.name, check.port)
+		}
+		portSet[check.port] = check.name
+	}
+	
+	return nil
+}
+
 // CalculatePorts returns deterministic ports for a consumer chain
 func CalculatePorts(chainID string) (*Ports, error) {
 	// Calculate hash of chain ID
@@ -50,6 +111,11 @@ func CalculatePorts(chainID string) (*Ports, error) {
 		RPC:     BaseRPCPort + ConsumerOffset + (offset * PortSpacing),
 		GRPC:    BaseGRPCPort + ConsumerOffset + (offset * PortSpacing),
 		GRPCWeb: BaseGRPCWebPort + ConsumerOffset + (offset * PortSpacing),
+	}
+	
+	// Validate the calculated ports
+	if err := ValidatePorts(ports); err != nil {
+		return nil, fmt.Errorf("calculated ports for chain %s are invalid: %w", chainID, err)
 	}
 	
 	return ports, nil

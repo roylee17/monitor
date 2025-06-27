@@ -1,0 +1,25 @@
+{{- if or (eq .Values.chain.genesis.type "inline") (eq .Values.chain.genesis.type "url") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ics-validator.fullname" . }}-genesis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: genesis
+data:
+  {{- if eq .Values.chain.genesis.type "inline" }}
+  genesis.json: |
+{{ .Values.chain.genesis.inline | indent 4 }}
+  {{- else if eq .Values.chain.genesis.type "url" }}
+  genesis-url: {{ .Values.chain.genesis.url | quote }}
+  fetch-genesis.sh: |
+    #!/bin/sh
+    set -e
+    echo "Fetching genesis from {{ .Values.chain.genesis.url }}"
+    wget -O /genesis/genesis.json "{{ .Values.chain.genesis.url }}"
+    echo "Genesis fetched successfully"
+  {{- end }}
+  persistent_peers: {{ include "ics-validator.persistentPeers" . | quote }}
+  seeds: {{ include "ics-validator.seeds" . | quote }}
+{{- end }}

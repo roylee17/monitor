@@ -1,0 +1,40 @@
+{{- if .Values.storage.validator.size }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ics-validator.fullname" . }}-validator-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: validator
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.storage.validator.size }}
+  {{- if .Values.storage.validator.storageClassName }}
+  storageClassName: {{ .Values.storage.validator.storageClassName }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.monitor.enabled .Values.storage.monitor.size }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ics-validator.fullname" . }}-monitor-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ics-validator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitor
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.storage.monitor.size }}
+  {{- if .Values.storage.monitor.storageClassName }}
+  storageClassName: {{ .Values.storage.monitor.storageClassName }}
+  {{- end }}
+{{- end }}
