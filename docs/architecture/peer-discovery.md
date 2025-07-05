@@ -97,15 +97,28 @@ CCV genesis generated with initial validator set
 
 ### 2. Deterministic Opt-in Algorithm
 
+The opt-in algorithm has two distinct phases:
+
+1. **Pre-spawn Decision**: Monitors determine which validators SHOULD opt-in
+2. **Post-launch Deployment**: Monitors query ACTUAL opted-in validators from CCV genesis
+
+**CRITICAL**: To ensure determinism across all monitors, validators are queried at the block height of the consumer creation event. This prevents timing issues where different monitors might see different validator sets.
+
 ```go
-// When consumer is created, determine if validator should opt-in
-func shouldOptIn(consumerID string) bool {
-    // Query all bonded validators using Cosmos SDK staking module
-    // GET /cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED
-    validators := queryBondedValidators()
+// Phase 1: When consumer is created, determine if validator should opt-in
+// Query at specific height to ensure all monitors see the same validator set
+func shouldOptIn(consumerID string, eventHeight int64) bool {
+    // Query all bonded validators at the event height
+    // This ensures determinism even if validator set changes
+    clientCtx := clientCtx.WithHeight(eventHeight)
+    validators := queryBondedValidatorsAtHeight(eventHeight)
     
     // Sort by tokens (voting power) descending
+    // Tiebreaker: operator address for determinism
     sort.Slice(validators, func(i, j int) bool {
+        if validators[i].Tokens.Equal(validators[j].Tokens) {
+            return validators[i].OperatorAddress < validators[j].OperatorAddress
+        }
         return validators[i].Tokens.GT(validators[j].Tokens)
     })
     
@@ -115,31 +128,44 @@ func shouldOptIn(consumerID string) bool {
         totalPower = totalPower.Add(val.Tokens)
     }
     
-    // Select validators until we reach 67% voting power
-    targetPower := totalPower.MulRaw(2).QuoRaw(3)  // 67%
+    // Select validators until we reach 66% voting power
+    // This ensures 2 out of 3 equal validators are selected
+    targetPower := totalPower.MulRaw(66).QuoRaw(100)  // 66%
     selectedPower := sdk.ZeroInt()
-    selectedValidators := []string{}
     
     for _, validator := range validators {
-        selectedValidators = append(selectedValidators, validator.Description.Moniker)
         selectedPower = selectedPower.Add(validator.Tokens)
+        
+        // Check if local validator is in the selection
+        if validator.IsLocal() {
+            return true  // Should opt-in
+        }
         
         if selectedPower.GTE(targetPower) {
             break
         }
     }
     
-    // Check if local validator is in selected set
-    localValidator := getLocalValidatorMoniker()
-    for _, selected := range selectedValidators {
-        if selected == localValidator {
-            return true
-        }
-    }
-    
-    return false
+    return false  // Should not opt-in
 }
+
+// Phase 2: After consumer reaches LAUNCHED, deploy if in initial validator set
+// The actual validators come from the CCV genesis, not our selection
 ```
+
+#### Timing Considerations
+
+Without height-based queries, monitors could see different validator sets:
+- **T1**: Monitor A queries → Sees validators [A:100, B:100, C:100]
+- **T2**: New validator D bonds with 150 tokens
+- **T3**: Monitor B queries → Sees validators [A:100, B:100, C:100, D:150]
+- **Result**: Different opt-in decisions!
+
+With height-based queries at the consumer creation event height:
+- All monitors query at height H (from event)
+- All see the same validator set
+- All make the same opt-in decisions
+- Perfect determinism achieved
 
 ### 3. Monitor Deployment Decision
 

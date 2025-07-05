@@ -621,7 +621,7 @@ func (h *ConsumerHandler) shouldMonitorConsumer(info *ConsumerInfo) bool {
 
 	// Check if we're responsible based on validator selection
 	if h.validatorSelector != nil {
-		result, err := h.validatorSelector.SelectValidatorSubset(info.ConsumerID, 0.67)
+		result, err := h.validatorSelector.SelectValidatorSubset(info.ConsumerID, 0.66)
 		if err != nil {
 			h.logger.Warn("Failed to check validator selection", "error", err)
 			return false
@@ -665,7 +665,7 @@ func (h *ConsumerHandler) handleConsumerCreated(event Event) error {
 
 	// Start subnet deployment workflow if dependencies are available
 	if h.validatorSelector != nil && h.subnetManager != nil {
-		return h.startSubnetWorkflow(chainID, consumerID)
+		return h.startSubnetWorkflow(chainID, consumerID, event.Height)
 	}
 
 	h.logger.Warn("Subnet workflow dependencies not available, skipping automatic deployment")
@@ -673,12 +673,12 @@ func (h *ConsumerHandler) handleConsumerCreated(event Event) error {
 }
 
 // startSubnetWorkflow initiates the subnet deployment workflow
-func (h *ConsumerHandler) startSubnetWorkflow(chainID, consumerID string) error {
-	h.logger.Info("Starting subnet workflow", "chain_id", chainID, "consumer_id", consumerID)
+func (h *ConsumerHandler) startSubnetWorkflow(chainID, consumerID string, height int64) error {
+	h.logger.Info("Starting subnet workflow", "chain_id", chainID, "consumer_id", consumerID, "event_height", height)
 
-	// Step 1: Calculate validator subset
+	// Step 1: Calculate validator subset at the event height to ensure determinism
 	votingPowerThreshold := 0.66 // 66% voting power threshold
-	selectionResult, err := h.validatorSelector.SelectValidatorSubset(consumerID, votingPowerThreshold)
+	selectionResult, err := h.validatorSelector.SelectValidatorSubsetAtHeight(consumerID, votingPowerThreshold, height)
 	if err != nil {
 		h.logger.Error("Failed to select validator subset", "error", err)
 		return err

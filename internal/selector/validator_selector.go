@@ -50,8 +50,10 @@ func NewValidatorSelector(clientCtx client.Context, rpcClient *rpcclient.HTTP, l
 	}
 }
 
-// SelectValidatorSubset selects a deterministic validator subset based on voting power threshold
-// The selection is deterministic across all monitors - they will all select the same subset
+// SelectValidatorSubset determines if the local validator should opt-in based on voting power threshold
+// The selection is deterministic - all monitors will make the same decision for who should opt-in
+// NOTE: This function only determines WHO should opt-in. The actual opted-in validators are
+// queried from the CCV patch after the consumer transitions to LAUNCHED phase.
 func (vs *ValidatorSelector) SelectValidatorSubset(consumerID string, votingPowerThreshold float64) (*SelectionResult, error) {
 	// Get all bonded validators from connected blockchain
 	validators, err := vs.getBondedValidators()
@@ -72,63 +74,161 @@ func (vs *ValidatorSelector) SelectValidatorSubset(consumerID string, votingPowe
 	)
 	thresholdPowerInt, _ := thresholdPower.Int(nil)
 
-	// Deterministic selection based on consumer ID
-	// Sort validators by a deterministic order that includes consumer ID
-	// This ensures all monitors select the same subset for a given consumer
+	// DETERMINISTIC SELECTION: Sort validators by voting power (descending)
+	// This ensures all monitors select the same high-power validators first
 	sortedValidators := make([]ValidatorInfo, len(validators))
 	copy(sortedValidators, validators)
 	
-	// Create deterministic but shuffled order based on consumer ID
-	// Hash each validator address with consumer ID to get a deterministic shuffle
-	type validatorWithHash struct {
-		validator ValidatorInfo
-		hash      string
-	}
-	
-	validatorsWithHash := make([]validatorWithHash, len(sortedValidators))
-	for i, v := range sortedValidators {
-		// Combine validator address with consumer ID for deterministic hash
-		combined := v.OperatorAddress + consumerID
-		hash := fmt.Sprintf("%x", combined) // Simple string hash for deterministic ordering
-		validatorsWithHash[i] = validatorWithHash{
-			validator: v,
-			hash:      hash,
+	// Sort by voting power descending, with operator address as tiebreaker for determinism
+	sort.Slice(sortedValidators, func(i, j int) bool {
+		// First compare by voting power (descending)
+		cmp := sortedValidators[i].VotingPower.Cmp(sortedValidators[j].VotingPower)
+		if cmp > 0 {
+			return true // i has more power than j
+		} else if cmp < 0 {
+			return false // j has more power than i
 		}
-	}
-	
-	// Sort by hash to get deterministic but shuffled order
-	sort.Slice(validatorsWithHash, func(i, j int) bool {
-		return validatorsWithHash[i].hash < validatorsWithHash[j].hash
+		// If voting power is equal, use operator address as deterministic tiebreaker
+		return sortedValidators[i].OperatorAddress < sortedValidators[j].OperatorAddress
 	})
 
-	// Select validators in deterministic order until we reach the voting power threshold
-	selectedValidators := make([]ValidatorInfo, 0)
+	// Check if local validator should opt-in by iterating through sorted validators
 	accumulatedPower := big.NewInt(0)
 	var localValidatorSelected bool
+	var selectedCount int
 
-	for _, vwh := range validatorsWithHash {
+	for _, validator := range sortedValidators {
+		accumulatedPower.Add(accumulatedPower, validator.VotingPower)
+		selectedCount++
+
+		// Check if this is the local validator
+		if validator.IsLocal {
+			localValidatorSelected = true
+		}
+
+		// Check if we've reached the threshold
+		// Continue until we exceed the threshold to ensure security
+		if accumulatedPower.Cmp(thresholdPowerInt) >= 0 {
+			break
+		}
+	}
+
+	// Log the selection result (using stdlib log for now)
+	log.Printf("Validator opt-in decision: consumer_id=%s, threshold=%.2f%%, local_validator_should_opt_in=%v, position=%d/%d",
+		consumerID,
+		votingPowerThreshold*100,
+		localValidatorSelected,
+		selectedCount,
+		len(validators))
+
+	// Build list of selected validators (for logging/display purposes only)
+	// The actual validators who will run the consumer chain come from the CCV patch
+	selectedValidators := make([]ValidatorInfo, 0, selectedCount)
+	accumulatedPower = big.NewInt(0)
+	
+	for i, validator := range sortedValidators {
+		if i >= selectedCount {
+			break
+		}
+		selectedValidators = append(selectedValidators, validator)
+		accumulatedPower.Add(accumulatedPower, validator.VotingPower)
+	}
+
+	return &SelectionResult{
+		ValidatorSubset:      selectedValidators, // For logging/display only
+		ShouldOptIn:          localValidatorSelected,
+		TotalVotingPower:     totalVotingPower,
+		SubsetVotingPower:    accumulatedPower,
+		VotingPowerThreshold: votingPowerThreshold,
+	}, nil
+}
+
+// SelectValidatorSubsetAtHeight determines if the local validator should opt-in based on voting power at a specific height
+// This ensures all monitors see the same validator set by querying at the same block height
+func (vs *ValidatorSelector) SelectValidatorSubsetAtHeight(consumerID string, votingPowerThreshold float64, height int64) (*SelectionResult, error) {
+	// Get all bonded validators at specific height
+	validators, err := vs.getBondedValidatorsAtHeight(height)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bonded validators at height %d: %w", height, err)
+	}
+
+	// Log that we're querying at specific height
+	log.Printf("Selecting validators at height %d for consumer %s", height, consumerID)
+
+	// Rest of the logic is the same as SelectValidatorSubset
+	// Calculate total voting power
+	totalVotingPower := big.NewInt(0)
+	for _, v := range validators {
+		totalVotingPower.Add(totalVotingPower, v.VotingPower)
+	}
+
+	// Calculate the voting power threshold
+	thresholdPower := new(big.Float).Mul(
+		new(big.Float).SetInt(totalVotingPower),
+		big.NewFloat(votingPowerThreshold),
+	)
+	thresholdPowerInt, _ := thresholdPower.Int(nil)
+
+	// DETERMINISTIC SELECTION: Sort validators by voting power (descending)
+	sortedValidators := make([]ValidatorInfo, len(validators))
+	copy(sortedValidators, validators)
+	
+	// Sort by voting power descending, with operator address as tiebreaker for determinism
+	sort.Slice(sortedValidators, func(i, j int) bool {
+		// First compare by voting power (descending)
+		cmp := sortedValidators[i].VotingPower.Cmp(sortedValidators[j].VotingPower)
+		if cmp > 0 {
+			return true // i has more power than j
+		} else if cmp < 0 {
+			return false // j has more power than i
+		}
+		// If voting power is equal, use operator address as deterministic tiebreaker
+		return sortedValidators[i].OperatorAddress < sortedValidators[j].OperatorAddress
+	})
+
+	// Check if local validator should opt-in by iterating through sorted validators
+	accumulatedPower := big.NewInt(0)
+	var localValidatorSelected bool
+	var selectedCount int
+
+	for _, validator := range sortedValidators {
+		accumulatedPower.Add(accumulatedPower, validator.VotingPower)
+		selectedCount++
+
+		// Check if this is the local validator
+		if validator.IsLocal {
+			localValidatorSelected = true
+		}
+
 		// Check if we've reached the threshold
 		if accumulatedPower.Cmp(thresholdPowerInt) >= 0 {
 			break
 		}
-
-		// Add to selected list
-		selectedValidators = append(selectedValidators, vwh.validator)
-		accumulatedPower.Add(accumulatedPower, vwh.validator.VotingPower)
-
-		// Check if this is the local validator
-		if vwh.validator.IsLocal {
-			localValidatorSelected = true
-		}
 	}
 
-	// Sort selected validators by operator address for consistent ordering in logs
-	sort.Slice(selectedValidators, func(i, j int) bool {
-		return selectedValidators[i].OperatorAddress < selectedValidators[j].OperatorAddress
-	})
+	// Log the selection result
+	log.Printf("Validator opt-in decision at height %d: consumer_id=%s, threshold=%.2f%%, local_validator_should_opt_in=%v, position=%d/%d",
+		height,
+		consumerID,
+		votingPowerThreshold*100,
+		localValidatorSelected,
+		selectedCount,
+		len(validators))
+
+	// Build list of selected validators
+	selectedValidators := make([]ValidatorInfo, 0, selectedCount)
+	accumulatedPower = big.NewInt(0)
+	
+	for i, validator := range sortedValidators {
+		if i >= selectedCount {
+			break
+		}
+		selectedValidators = append(selectedValidators, validator)
+		accumulatedPower.Add(accumulatedPower, validator.VotingPower)
+	}
 
 	return &SelectionResult{
-		ValidatorSubset:      selectedValidators,
+		ValidatorSubset:      selectedValidators, // For logging/display only
 		ShouldOptIn:          localValidatorSelected,
 		TotalVotingPower:     totalVotingPower,
 		SubsetVotingPower:    accumulatedPower,
@@ -138,7 +238,18 @@ func (vs *ValidatorSelector) SelectValidatorSubset(consumerID string, votingPowe
 
 // getBondedValidators retrieves all bonded validators
 func (vs *ValidatorSelector) getBondedValidators() ([]ValidatorInfo, error) {
-	stakingClient := stakingtypes.NewQueryClient(vs.clientCtx)
+	return vs.getBondedValidatorsAtHeight(0) // 0 means latest
+}
+
+// getBondedValidatorsAtHeight retrieves all bonded validators at a specific height
+func (vs *ValidatorSelector) getBondedValidatorsAtHeight(height int64) ([]ValidatorInfo, error) {
+	// Update client context with height if specified
+	clientCtx := vs.clientCtx
+	if height > 0 {
+		clientCtx = clientCtx.WithHeight(height)
+	}
+	
+	stakingClient := stakingtypes.NewQueryClient(clientCtx)
 
 	// Query bonded validators
 	resp, err := stakingClient.Validators(context.Background(), &stakingtypes.QueryValidatorsRequest{

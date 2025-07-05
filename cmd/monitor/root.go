@@ -287,7 +287,7 @@ func newValidatorSelectCmd() *cobra.Command {
 	}
 
 	// Add flags
-	cmd.Flags().Float64("subset-ratio", 0.67, "Ratio of validators to select for subset (0.0-1.0)")
+	cmd.Flags().Float64("subset-ratio", 0.66, "Ratio of validators to select for subset (0.0-1.0)")
 
 	// Add SDK query flags
 	flags.AddQueryFlagsToCmd(cmd)
