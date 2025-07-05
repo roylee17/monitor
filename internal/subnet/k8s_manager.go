@@ -158,7 +158,8 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 	}
 
 	genesisPath := filepath.Join(configDir, "genesis.json")
-	genesisData, err := json.MarshalIndent(preCCVGenesis, "", "  ")
+	// Use sorted JSON marshaling for deterministic output
+	genesisData, err := MarshalSortedJSON(preCCVGenesis)
 	if err != nil {
 		return fmt.Errorf("failed to marshal genesis: %w", err)
 	}
@@ -694,8 +695,8 @@ func (m *K8sManager) GetNetworkInfoFromK8s(ctx context.Context, chainID string) 
 func (m *K8sManager) updateConsumerGenesisConfigMap(ctx context.Context, chainID string, ccvPatch map[string]interface{}) error {
 	m.logger.Info("Updating consumer genesis ConfigMap with CCV patch", "chain_id", chainID)
 
-	// Convert CCV patch to JSON
-	ccvPatchJSON, err := json.Marshal(ccvPatch)
+	// Convert CCV patch to JSON with sorted fields for deterministic output
+	ccvPatchJSON, err := MarshalSortedJSON(ccvPatch)
 	if err != nil {
 		return fmt.Errorf("failed to marshal CCV patch: %w", err)
 	}

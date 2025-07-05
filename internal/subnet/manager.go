@@ -67,8 +67,8 @@ func (m *Manager) ApplyCCVGenesisPatch(chainID string, ccvPatch map[string]inter
 		appState[key] = value
 	}
 	
-	// Write back
-	updatedGenesis, err := json.MarshalIndent(genesis, "", "  ")
+	// Write back with sorted fields for deterministic output
+	updatedGenesis, err := MarshalSortedJSON(genesis)
 	if err != nil {
 		return fmt.Errorf("failed to marshal updated genesis: %w", err)
 	}
