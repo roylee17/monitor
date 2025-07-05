@@ -1,190 +1,345 @@
-# Production Peer Discovery for ICS Consumer Chains
+# LoadBalancer-Based Peer Discovery for ICS Consumer Chains
 
 ## Overview
 
-The ICS Monitor implements dynamic peer discovery for consumer chains, automatically configuring peers based on the validator set selected for each consumer chain. This document explains how peer discovery works, including our learnings from the Traefik TCP proxy incompatibility and the production-ready solution using direct NodePort/LoadBalancer exposure.
+This document describes the implementation of peer discovery for ICS consumer chains using LoadBalancer services. The system enables validators in different Kubernetes clusters to discover and connect to each other's consumer chains while strictly following ICS (Interchain Security) specifications.
 
-## Key Learning: Tendermint P2P Protocol Incompatibility with TCP Proxies
+## Core Principles
 
-### The Protobuf Error
+### 1. ICS Compliance
 
-During development, we discovered that Tendermint's P2P protocol is incompatible with standard TCP proxies (Traefik, HAProxy, nginx, etc.). The error manifests as:
+- **Only validators in the initial validator set deploy consumer chains**
+- Initial validator set is determined at spawn time by the provider chain
+- Initial validator set always contains provider consensus keys for consistent identification
+- Consumer key assignments are handled separately during genesis construction
+- No random subset selection or pre-determination of validators
+- Monitors must honor the provider chain's CCV genesis
 
-```text
-auth failure: secret conn failed: proto: BytesValue: wiretype end group for non-group
-```
+### 2. Direct TCP Connectivity
 
-### Root Cause
+- Tendermint P2P protocol requires direct TCP connections (no proxies)
+- Uses SecretConnection encryption that is incompatible with TCP proxies
+- LoadBalancer services provide direct TCP exposure
+- TCP proxies (Traefik, HAProxy, nginx) cause protocol errors: `auth failure: secret conn failed: proto: BytesValue: wiretype end group for non-group`
 
-Tendermint uses a custom encrypted protocol called **SecretConnection** for P2P communication. This protocol:
+### 3. Deterministic Configuration
 
-- Performs its own encryption and authentication
-- Uses a specific handshake sequence
-- Is sensitive to any modification of the TCP stream
-- Cannot tolerate the buffering or stream manipulation that TCP proxies perform
+- All validators calculate the same ports using chain ID hash
+- All monitors construct identical genesis files (including sorting fields)
+- Peer discovery uses on-chain validator registry
+- All monitors run the same opt-in algorithm based on voting power
+- No hardcoded validator lists or fallback mechanisms
 
-### Failed Attempts
+## Architecture
 
-We attempted several solutions that didn't work:
-
-1. **Traefik TCP Router**: Even with raw TCP mode, the protobuf errors persisted
-2. **ServersTransportTCP**: Custom transport configuration didn't resolve the issue
-3. **Disabled timeouts**: Setting all timeouts to 0 didn't help
-4. **TCP entrypoint tuning**: No configuration resolved the protocol incompatibility
-
-## Production-Ready Solution: Direct TCP Exposure via LoadBalancer
-
-Given the incompatibility with TCP proxies, the solution is **direct TCP exposure** without any intermediate proxy. We use a **shared LoadBalancer** approach that works uniformly across testnet and production environments.
-
-### Unified Architecture Overview
+### System Components
 
 ```text
-┌──────────────────────────────┐     ┌─────────────────────────────┐
-│   Validator A Cluster        │     │   Validator B Cluster       │
-│                              │     │                             │
-│  ┌───────────────────────┐   │     │  ┌───────────────────────┐  │
-│  │ Shared LoadBalancer   │   │     │  │ Shared LoadBalancer   │  │
-│  │ Public IP: 1.2.3.4    │   │     │  │ Public IP: 5.6.7.8    │  │
-│  │                       │   │     │  │                       │  │
-│  │ Direct TCP Ports:     │   │     │  │ Direct TCP Ports:     │  │
-│  │ - 30100 → Consumer-1  │   │     │  │ - 30100 → Consumer-1  │  │
-│  │ - 30127 → Consumer-2  │   │     │  │ - 30127 → Consumer-2  │  │
-│  │ - 30145 → Consumer-3  │   │     │  │ - 30145 → Consumer-3  │  │
-│  └─────────┬─────────────┘   │     │  └─────────┬─────────────┘  │
-│             │ No Proxy!      │     │             │ No Proxy!      │
-│             │ Direct TCP     │     │             │ Direct TCP     │
-│             ▼                │     │             ▼                │
-│  ┌─────────────────────────┐ │     │  ┌─────────────────────────┐ │
-│  │ Consumer Services       │ │     │  │ Consumer Services       │ │
-│  │ (NodePort/LoadBalancer) │ │     │  │ (NodePort/LoadBalancer) │ │
-│  └─────────────────────────┘ │     │  └─────────────────────────┘ │
-│            │                 │     │            │                 │
-│            ▼                 │     │            ▼                 │
-│  ┌─────────┐ ┌─────────┐     │     │  ┌─────────┐ ┌─────────┐    │
-│  │Consumer │ │Consumer │     │     │  │Consumer │ │Consumer │    │
-│  │Chain 1  │ │Chain 2  │     │     │  │Chain 1  │ │Chain 2  │    │
-│  └─────────┘ └─────────┘     │     │  └─────────┘ └─────────┘    │
-└──────────────────────────────┘     └─────────────────────────────┘
-                │                                     │
-                └──────────── Internet ───────────────┘
-                         Direct P2P Connections
+┌─────────────────────────────────────────────────────────────────┐
+│                        Provider Chain                            │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  On-chain Validator Registry (Description Field)         │   │
+│  │  - Alice: alice-lb.example.com                          │   │
+│  │  - Bob: bob-lb.example.com                              │   │
+│  │  - Charlie: charlie-lb.example.com                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                                    │
+                 ┌──────────────────┴──────────────────┐
+                 ▼                                     ▼
+        ┌─────────────────┐                   ┌─────────────────┐
+        │  Alice Cluster  │                   │   Bob Cluster   │
+        │                 │                   │                 │
+        │ LoadBalancer:   │                   │ LoadBalancer:   │
+        │ alice-lb        │◄──────────────────│ bob-lb          │
+        │                 │    Direct TCP     │                 │
+        │ Dynamic Ports:  │                   │ Dynamic Ports:  │
+        │ - 30416: cons-1 │                   │ - 30416: cons-1 │
+        │ - 30523: cons-2 │                   │ - 30523: cons-2 │
+        └─────────────────┘                   └─────────────────┘
 ```
 
-### Standard Implementation: Shared LoadBalancer with Dynamic Ports
+### Namespace Organization
 
-This approach works identically in both testnet (using MetalLB) and production (using cloud LoadBalancers).
+- **Provider Namespace** (`provider`): Contains Provider chain and Monitor deployments
+- **Consumer Namespaces** (`{validator}-{chain-id}`): Each consumer chain gets its own namespace
+  - Example: `alice-testchain1-0`, `bob-testchain1-0`
+  - Contains: Consumer chain deployment + Hermes relayer deployment
 
-#### How It Works
+## Implementation Flow
 
-1. **Validator Setup**:
-   - Each validator deploys ONE LoadBalancer service in their cluster
-   - Registers their LoadBalancer's external IP/hostname on-chain
-   - Example: Alice registers `alice.validators.com`
+### 1. Consumer Chain Creation
 
-2. **Consumer Chain Creation**:
-   - Monitor deploys consumer chain pods in a dedicated namespace
-   - Creates a Service that routes through the shared LoadBalancer
-   - Adds a new port to the LoadBalancer configuration
-   - Port is deterministically calculated from chain ID
-
-3. **Peer Discovery**:
-   - Other validators query on-chain registry for endpoints
-   - Calculate the same deterministic port for the consumer
-   - Connect using: `<nodeID>@<hostname>:<port>`
-
-#### LoadBalancer Service Configuration
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: p2p-loadbalancer
-  namespace: provider
-  labels:
-    app: ics-monitor
-    component: p2p-gateway
-spec:
-  type: LoadBalancer
-  # No selector here - we use EndpointSlices for dynamic routing
-  ports:
-    # Ports are added dynamically by the monitor when consumer chains are created
-    - name: consumer-testchain1-0
-      port: 30143  # Deterministic port based on chain ID
-      targetPort: 30143
-      protocol: TCP
-    - name: consumer-testchain2-0  
-      port: 30187  # Different consumer, different port
-      targetPort: 30187
-      protocol: TCP
-
----
-# EndpointSlice created by monitor for each consumer
-apiVersion: discovery.k8s.io/v1
-kind: EndpointSlice
-metadata:
-  name: consumer-testchain1-0-endpoints
-  namespace: provider
-  labels:
-    kubernetes.io/service-name: p2p-loadbalancer
-addressType: IPv4
-endpoints:
-  - addresses:
-      - "10.244.0.5"  # Pod IP of consumer chain
-    conditions:
-      ready: true
-    targetRef:
-      kind: Pod
-      name: testchain1-0
-      namespace: alice-testchain1-0
-ports:
-  - port: 26656  # Consumer's P2P port
-    name: p2p
-    protocol: TCP
+```text
+User submits create-consumer transaction
+    │
+    ▼
+Provider chain creates consumer (INITIALIZED phase)
+    │
+    ▼
+Monitors determine opt-in using deterministic algorithm
+    │
+    ▼
+Selected validators opt-in before spawn time
+    │
+    ▼
+Validators optionally assign consumer keys
+    │
+    ▼
+At spawn time: Provider determines initial validator set
+    │
+    ▼
+Consumer transitions to LAUNCHED phase
+    │
+    ▼
+CCV genesis generated with initial validator set
 ```
 
-#### Dynamic Service Management
+### 2. Deterministic Opt-in Algorithm
 
-When the monitor creates a consumer chain:
+```go
+// When consumer is created, determine if validator should opt-in
+func shouldOptIn(consumerID string) bool {
+    // Query all bonded validators using Cosmos SDK staking module
+    // GET /cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED
+    validators := queryBondedValidators()
+    
+    // Sort by tokens (voting power) descending
+    sort.Slice(validators, func(i, j int) bool {
+        return validators[i].Tokens.GT(validators[j].Tokens)
+    })
+    
+    // Calculate total voting power
+    totalPower := sdk.ZeroInt()
+    for _, val := range validators {
+        totalPower = totalPower.Add(val.Tokens)
+    }
+    
+    // Select validators until we reach 67% voting power
+    targetPower := totalPower.MulRaw(2).QuoRaw(3)  // 67%
+    selectedPower := sdk.ZeroInt()
+    selectedValidators := []string{}
+    
+    for _, validator := range validators {
+        selectedValidators = append(selectedValidators, validator.Description.Moniker)
+        selectedPower = selectedPower.Add(validator.Tokens)
+        
+        if selectedPower.GTE(targetPower) {
+            break
+        }
+    }
+    
+    // Check if local validator is in selected set
+    localValidator := getLocalValidatorMoniker()
+    for _, selected := range selectedValidators {
+        if selected == localValidator {
+            return true
+        }
+    }
+    
+    return false
+}
+```
 
-1. **Deploy Consumer Chain**:
-   ```go
-   // Deploy consumer chain in dedicated namespace
-   namespace := fmt.Sprintf("%s-%s", validatorName, chainID)
-   deployConsumerChain(namespace, chainID)
-   ```
+### 3. Monitor Deployment Decision
 
-2. **Update LoadBalancer Service**:
-   ```go
-   // Calculate deterministic port
-   port := CalculatePorts(chainID).P2P
-   
-   // Add port to LoadBalancer service
-   addPortToLoadBalancer("p2p-loadbalancer", port, chainID)
-   ```
+```go
+// When consumer reaches LAUNCHED phase:
+func HandlePhaseTransition(consumerID, chainID string, newPhase string) {
+    if newPhase != "CONSUMER_PHASE_LAUNCHED" {
+        return
+    }
+    
+    // 1. Fetch CCV genesis from provider using ICS provider module
+    // GET /interchain_security/ccv/provider/consumer_genesis/{consumer_id}
+    ccvGenesis := queryCCVGenesis(consumerID)
+    
+    // 2. Check if local validator is in initial set
+    if !isLocalValidatorInInitialSet(ccvGenesis) {
+        log("Not in initial set, skipping deployment")
+        return
+    }
+    
+    // 3. Deploy consumer chain
+    deployConsumerChain(chainID, ccvGenesis)
+    
+    // 4. Configure LoadBalancer
+    port := calculatePort(chainID)
+    addLoadBalancerPort(chainID, port)
+    
+    // 5. Discover peers from on-chain registry
+    peers := discoverPeers(chainID, ccvGenesis.InitialValSet)
+    configureConsumerPeers(chainID, peers)
+}
+```
 
-3. **Create EndpointSlice**:
-   ```go
-   // Route traffic to consumer pod
-   createEndpointSlice(chainID, consumerPodIP, port)
-   ```
+### 4. Initial Validator Set Checking
 
-#### Advantages of This Approach
+The CCV genesis initial validator set always contains the provider's consensus public key, regardless of whether a validator has assigned a consumer key. This ensures consistent validator identification across all monitors.
 
-- ✅ **Uniform**: Same setup for testnet (MetalLB) and production (cloud LB)
-- ✅ **Cost-effective**: One LoadBalancer for all consumer chains
-- ✅ **Dynamic**: Ports added/removed as consumers are created/deleted  
-- ✅ **Direct TCP**: No proxies, compatible with Tendermint P2P
-- ✅ **Deterministic**: All validators calculate the same ports
-- ✅ **Scalable**: Supports hundreds of consumer chains per validator
+```go
+func isLocalValidatorInInitialSet(ccvGenesis CCVGenesis) bool {
+    localValidator := getLocalValidatorInfo()
+    
+    // Initial validator set always uses provider consensus keys
+    providerKey := localValidator.ProviderConsensusKey
+    
+    // Check against initial validator set
+    for _, validator := range ccvGenesis.InitialValSet {
+        if validator.PubKey == providerKey {
+            return true
+        }
+    }
+    
+    return false
+}
+```
 
-## LoadBalancer Setup
+### 5. Deterministic Genesis Construction
 
-### For Testnet (Kind Clusters)
+When building the consumer genesis, monitors must construct it identically to ensure all validators have the same genesis hash:
 
-We use **MetalLB** to provide LoadBalancer services in Kind clusters:
+```go
+func buildConsumerGenesis(ccvPatch CCVGenesis, consumerID string) Genesis {
+    // CCV patch already contains initial validator set with correct keys
+    genesis := ccvPatch
+    
+    // Query all key assignments to update validator keys in genesis
+    // GET /interchain_security/ccv/provider/address_pairs/{consumer_id}
+    keyAssignments := queryAddressPairs(consumerID)
+    
+    // Update genesis validators with assigned keys
+    for i, validator := range genesis.Provider.InitialValSet {
+        for _, pair := range keyAssignments.PairValConAddr {
+            if validator.Address == pair.ProviderAddress && pair.ConsumerKey != "" {
+                // Update to use assigned consumer key
+                genesis.Provider.InitialValSet[i].PubKey = pair.ConsumerKey
+                break
+            }
+        }
+    }
+    
+    // Sort all fields to ensure deterministic ordering
+    sortGenesisFields(&genesis)
+    
+    return genesis
+}
+```
 
+### 6. Peer Discovery
+
+```go
+func discoverPeers(chainID string, initialValSet []Validator) []string {
+    // 1. Query on-chain validator registry for external endpoints
+    registry := queryValidatorRegistry()
+    
+    // 2. Calculate consumer port
+    port := calculatePort(chainID)
+    
+    // 3. Build peer list ONLY from initial validator set
+    var peers []string
+    for _, validator := range initialValSet {
+        // Get external endpoint from registry
+        endpoint := registry[validator.Moniker].P2PEndpoint
+        
+        // Get node ID from GetNodeInfo API or derive from node key
+        nodeInfo := queryNodeInfo(validator.RPCEndpoint)
+        nodeID := nodeInfo.DefaultNodeInfo.ID
+        
+        peer := fmt.Sprintf("%s@%s:%d", nodeID, endpoint, port)
+        peers = append(peers, peer)
+    }
+    
+    return peers
+}
+```
+
+## Technical Details
+
+### Node ID
+
+The Tendermint/CometBFT node ID is derived from the node's public key:
+- Stored in `node_key.json` file
+- Can be obtained via `GetNodeInfo` API
+- Can be shown with `interchain-security-pd tendermint show-node-id`
+- Format: 40-character hex string (e.g., `3b4c06c2c0e8f6d7a5b9c1a2f3e4d5c6b7a8e9f0`)
+
+### Port Calculation
+
+```go
+func calculatePort(chainID string) int {
+    hash := sha256.Sum256([]byte(chainID))
+    offset := int(binary.BigEndian.Uint64(hash[:8]) % 1000)
+    return 30100 + offset // Base port + deterministic offset
+}
+```
+
+### LoadBalancer Management
+
+```go
+type LoadBalancerManager struct {
+    clientset kubernetes.Interface
+    logger    *slog.Logger
+}
+
+func (m *LoadBalancerManager) AddConsumerPort(chainID string, port int32) error {
+    // 1. Get LoadBalancer service
+    svc, err := m.clientset.CoreV1().Services("provider").
+        Get(ctx, "p2p-loadbalancer", metav1.GetOptions{})
+    
+    // 2. Add port to service
+    svc.Spec.Ports = append(svc.Spec.Ports, v1.ServicePort{
+        Name:       fmt.Sprintf("consumer-%s", chainID),
+        Port:       port,
+        TargetPort: intstr.FromInt(int(port)),
+        Protocol:   v1.ProtocolTCP,
+    })
+    
+    // 3. Update service
+    _, err = m.clientset.CoreV1().Services("provider").
+        Update(ctx, svc, metav1.UpdateOptions{})
+    
+    // 4. Create EndpointSlice for routing
+    return m.createEndpointSlice(chainID, port)
+}
+```
+
+### Event-Based Endpoint Updates
+
+```go
+type ValidatorUpdateHandler struct {
+    validatorRegistry *ValidatorRegistry
+    peerDiscovery     *PeerDiscovery
+}
+
+func (h *ValidatorUpdateHandler) HandleEvent(event Event) error {
+    if event.Type != "edit_validator" {
+        return nil
+    }
+    
+    // Refresh validator endpoints from chain
+    endpoints := h.validatorRegistry.RefreshEndpoints()
+    
+    // Update peer discovery
+    h.peerDiscovery.SetValidatorEndpoints(endpoints)
+    
+    // Consumer chains will use updated endpoints automatically
+    return nil
+}
+```
+
+## Deployment Setup
+
+### For Testnet (Kind + MetalLB)
+
+1. **Install MetalLB**:
+```bash
+helm repo add metallb https://metallb.github.io/metallb
+helm install metallb metallb/metallb -n metallb-system --create-namespace
+```
+
+2. **Configure IP Pool**:
 ```yaml
-# metallb-config.yaml
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -201,23 +356,15 @@ metadata:
   namespace: metallb-system
 ```
 
-Deploy MetalLB using Helm:
-```bash
-helm repo add metallb https://metallb.github.io/metallb
-helm install metallb metallb/metallb -n metallb-system --create-namespace
-kubectl apply -f metallb-config.yaml
-```
-
 ### For Production
 
-Use your cloud provider's LoadBalancer:
+Use cloud provider LoadBalancer with appropriate annotations:
 
 **AWS (NLB)**:
 ```yaml
 metadata:
   annotations:
     service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
 ```
 
 **GCP**:
@@ -227,230 +374,141 @@ metadata:
     cloud.google.com/load-balancer-type: "External"
 ```
 
-**Azure**:
+### Kubernetes Resources
+
 ```yaml
+# LoadBalancer Service (created by monitor)
+apiVersion: v1
+kind: Service
 metadata:
-  annotations:
-    service.beta.kubernetes.io/azure-load-balancer-resource-group: "myResourceGroup"
+  name: p2p-loadbalancer
+  namespace: provider
+spec:
+  type: LoadBalancer
+  ports: [] # Ports added dynamically by monitor
+  
+---
+# RBAC for monitor
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ics-monitor
+rules:
+- apiGroups: [""]
+  resources: ["services", "endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
 
-## End-to-End Flow
-
-### 1. Initial Validator Setup
-
-Each validator:
-
-1. **Deploys the ICS Monitor** with Helm
-2. **Creates a shared LoadBalancer service** (automatically created by monitor)
-3. **Registers their LoadBalancer endpoint on-chain**:
+### Validator Registration
 
 ```bash
-# Get LoadBalancer external IP/hostname
-kubectl get svc p2p-loadbalancer -n provider -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-# Returns: alice-lb.us-east-1.elb.amazonaws.com (or IP address)
+# Get LoadBalancer endpoint
+ENDPOINT=$(kubectl get svc p2p-loadbalancer -n provider \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
 # Register on-chain
 interchain-security-pd tx staking edit-validator \
-    --details "Validator alice
-p2p=alice-lb.us-east-1.elb.amazonaws.com" \
-    --from alice \
-    --chain-id provider \
-    --keyring-backend test
+  --details "p2p=$ENDPOINT" \
+  --from validator-key \
+  --chain-id provider \
+  --keyring-backend test
 ```
 
-### 2. Consumer Chain Creation
-
-When a consumer chain is proposed and launched:
-
-1. **Monitors detect the CONSUMER_PHASE_LAUNCHED event**
-2. **Each opted-in validator's monitor**:
-   - Deploys consumer chain in namespace `<validator>-<chain-id>`
-   - Calculates deterministic port: `port = 30100 + (hash(chainID) % 1000)`
-   - Updates LoadBalancer to route `port` → consumer pod
-   - Creates EndpointSlice for traffic routing
-
-### 3. Peer Discovery
-
-Validators discover peers for consumer chains:
-
-1. **Query on-chain registry** for validator endpoints
-2. **Calculate deterministic port** for the consumer chain
-3. **Generate deterministic node ID** for each validator/chain combination
-4. **Build peer list**:
-
-```text
-Alice registered: alice-lb.us-east-1.elb.amazonaws.com
-Bob registered: bob-lb.eu-west-1.elb.amazonaws.com  
-Charlie registered: charlie-lb.ap-south-1.elb.amazonaws.com
-
-For consumer "testchain1-0":
-Port = 30100 + (hash("testchain1-0") % 1000) = 30143
-
-Peers:
-- <alice-node-id>@alice-lb.us-east-1.elb.amazonaws.com:30143
-- <bob-node-id>@bob-lb.eu-west-1.elb.amazonaws.com:30143
-- <charlie-node-id>@charlie-lb.ap-south-1.elb.amazonaws.com:30143
-```
-
-### 4. Connection Flow
-
-```text
-Bob's Consumer → Bob's LB:30143 → Alice's LB:30143 → Alice's Consumer
-     (TCP)          (Internet)         (Internal)         (Pod)
-```
-
-## Deterministic Calculations
-
-### Port Calculation
-
-```go
-func CalculatePorts(chainID string) (*Ports, error) {
-    hash := sha256.Sum256([]byte(chainID))
-    offset := int(binary.BigEndian.Uint64(hash[:8]) % 1000)
-    
-    return &Ports{
-        P2P: 30100 + offset,
-        RPC: 30200 + offset,
-        GRPC: 30300 + offset,
-    }, nil
-}
-```
-
-### Node ID Generation
-
-```go
-func GetNodeID(validatorName, chainID string) (string, error) {
-    seed := validatorName + "-" + chainID
-    // Generate deterministic ed25519 key from seed
-    // Return hex-encoded node ID
-}
-```
-
-## Uniform Deployment Approach
-
-### Key Principles
-
-1. **Same architecture everywhere**: LoadBalancer-based approach works identically in testnet and production
-2. **No special cases**: MetalLB in Kind provides the same LoadBalancer semantics as cloud providers
-3. **Automatic service management**: Monitor handles all LoadBalancer configuration dynamically
-4. **Deterministic addressing**: All validators calculate the same ports and node IDs
-
-### Testnet Setup (Kind + MetalLB)
+## CLI Examples
 
 ```bash
-# 1. Create Kind cluster
-kind create cluster --config kind-cluster.yaml
+# List all launched consumer chains
+interchain-security-pd query provider list-consumer-chains 3
 
-# 2. Install MetalLB
-helm install metallb metallb/metallb -n metallb-system --create-namespace
+# Get specific consumer chain details
+interchain-security-pd query provider consumer-chain 0
 
-# 3. Configure IP pool (use Kind network range)
-kubectl apply -f metallb-config.yaml
+# Get consumer genesis (CCV patch)
+interchain-security-pd query provider consumer-genesis 0
 
-# 4. Deploy ICS validator
-helm install alice ./helm/ics-validator \
-  --set validator.name=alice \
-  --set validator.mnemonic="$ALICE_MNEMONIC"
+# Get opted-in validators
+interchain-security-pd query provider consumer-opted-in-validators 0
 
-# 5. LoadBalancer automatically gets external IP
-kubectl get svc p2p-loadbalancer -n provider
-# NAME               TYPE           CLUSTER-IP      EXTERNAL-IP     PORT(S)
-# p2p-loadbalancer   LoadBalancer   10.96.1.2      172.18.255.1    30143:31245/TCP
+# Get assigned consumer key for a validator
+interchain-security-pd query provider validator-consumer-key 0 cosmosvalcons1...
+
+# Get initial validator set
+interchain-security-pd query provider consumer-validators 0
 ```
 
-### Production Setup
+## API Reference
 
-```bash
-# Same Helm deployment!
-helm install alice ./helm/ics-validator \
-  --set validator.name=alice \
-  --set validator.mnemonic="$ALICE_MNEMONIC" \
-  --set loadBalancer.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"="nlb"
+### ICS Provider Module APIs
 
-# LoadBalancer gets real external endpoint
-kubectl get svc p2p-loadbalancer -n provider  
-# NAME               TYPE           CLUSTER-IP      EXTERNAL-IP                          PORT(S)
-# p2p-loadbalancer   LoadBalancer   10.96.1.2      alice-lb.us-east-1.elb.amazonaws.com  30143:31245/TCP
-```
+1. **Query Consumer Chain Details**
+   - `GET /interchain_security/ccv/provider/consumer_chain/{consumer_id}`
+   - Returns phase, spawn time, chain ID, metadata
 
-## Implementation Details
+2. **Query Consumer Genesis (CCV Patch)**
+   - `GET /interchain_security/ccv/provider/consumer_genesis/{consumer_id}`
+   - Returns initial validator set, parameters, provider info
 
-### Monitor Responsibilities
+3. **Query Opted-in Validators**
+   - `GET /interchain_security/ccv/provider/opted_in_validators/{consumer_id}`
+   - Returns list of validator addresses that opted in
 
-The ICS Monitor automatically:
+4. **Query Validator Consumer Key**
+   - `GET /interchain_security/ccv/provider/validator_consumer_addr/{consumer_id}/{provider_address}`
+   - Returns assigned consumer address if key assigned
 
-1. **Creates/manages the shared LoadBalancer** on startup
-2. **Adds ports dynamically** when consumer chains are created
-3. **Routes traffic** using EndpointSlices to correct consumer pods
-4. **Removes ports** when consumer chains are deleted
-5. **Handles all networking complexity** transparently
+5. **Query All Key Assignments**
+   - `GET /interchain_security/ccv/provider/address_pairs/{consumer_id}`
+   - Returns all provider-consumer key mappings
 
-### Helm Configuration
+### Cosmos SDK Staking Module APIs
 
-```yaml
-# values.yaml
-loadBalancer:
-  enabled: true
-  annotations:
-    # AWS NLB
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    # GCP
-    # cloud.google.com/load-balancer-type: "External"
-    # Azure  
-    # service.beta.kubernetes.io/azure-load-balancer-resource-group: "myRG"
-  
-# For testnet with MetalLB - no annotations needed
-# MetalLB automatically assigns IPs from configured pool
-```
+1. **Query Bonded Validators**
+   - `GET /cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED`
+   - Returns all active validators with voting power
 
-### Security Considerations
+2. **Query Validator Details**
+   - `GET /cosmos/staking/v1beta1/validators/{validator_addr}`
+   - Returns specific validator info including description
 
-1. **Firewall Rules**: Only open required P2P ports (30100-31100 range)
-2. **DDoS Protection**: Use cloud provider's DDoS protection on LoadBalancer
-3. **Monitoring**: Track connection counts and bandwidth per consumer
-4. **Rate Limiting**: Consider rate limiting at LoadBalancer level
+### Tendermint/CometBFT APIs
 
-## Troubleshooting
+1. **Query Node Info**
+   - `GET /cosmos/base/tendermint/v1beta1/node_info`
+   - Returns node information including:
+     - `default_node_info.id` - Node ID
+     - `default_node_info.listen_addr` - P2P listening address
+     - `default_node_info.moniker` - Node moniker
+     - `default_node_info.network` - Chain ID
+     - `application_version` - Application version info
 
-### Common Issues
+### Note on P2P Endpoints
 
-1. **LoadBalancer pending in Kind**:
-   - Check MetalLB is installed: `kubectl get pods -n metallb-system`
-   - Verify IP pool configuration matches Kind network
+P2P endpoints can be discovered through:
 
-2. **Peers can't connect**:
-   - Verify LoadBalancer has external IP/hostname
-   - Check validator registered correct endpoint on-chain
-   - Ensure firewall allows traffic on calculated ports
+1. **GetNodeInfo API** - Returns the node's P2P listen address
+   - `GET /cosmos/base/tendermint/v1beta1/node_info`
+   - Returns `default_node_info.listen_addr` (e.g., `tcp://0.0.0.0:26656`)
+   - This is the internal listening address, not necessarily externally accessible
 
-3. **Port conflicts**:
-   - Rare due to deterministic calculation
-   - If occurs, check for hash collisions in port calculation
+2. **External Registry** - For cross-cluster connectivity
+   - Validators register their external LoadBalancer endpoints
+   - Can use validator description field: `interchain-security-pd tx staking edit-validator --details "p2p=alice-lb.example.com"`
+   - Or maintain a separate service registry
 
-### Debugging Commands
-
-```bash
-# Check LoadBalancer status
-kubectl get svc p2p-loadbalancer -n provider -o yaml
-
-# List all EndpointSlices
-kubectl get endpointslices -n provider -l kubernetes.io/service-name=p2p-loadbalancer
-
-# Verify port routing
-kubectl describe svc p2p-loadbalancer -n provider
-
-# Test connectivity
-telnet <loadbalancer-ip> <consumer-port>
-```
+For cross-cluster ICS deployments, an external registry is required since the node's `listen_addr` is typically not routable between clusters.
 
 ## Summary
 
-This unified approach provides:
+This LoadBalancer-based approach provides:
 
-- ✅ **Identical setup** for testnet (MetalLB) and production (cloud LB)
-- ✅ **Automatic management** by the ICS Monitor
-- ✅ **Direct TCP connections** compatible with Tendermint
-- ✅ **Cost-effective** with one LoadBalancer per validator
-- ✅ **Scalable** to hundreds of consumer chains
-- ✅ **Simple** for validators to deploy and operate
+- ✅ **ICS Compliance**: Only initial validator set deploys
+- ✅ **Direct TCP**: Compatible with Tendermint P2P
+- ✅ **Dynamic Discovery**: Uses on-chain registry
+- ✅ **Uniform Architecture**: Same for testnet and production
+- ✅ **Automatic Management**: Monitor handles all complexity
+- ✅ **Deterministic Opt-in**: All monitors agree on which validators should opt-in
 
-The key insight is using a shared LoadBalancer with dynamic port management, making the deployment uniform across all environments while maintaining the direct TCP connectivity required by Tendermint's P2P protocol.
+The key is strict adherence to ICS specifications: monitors use a deterministic algorithm to select validators for opt-in (top validators by voting power until 67% threshold), then check the provider chain's CCV genesis to determine deployment, with no fallback mechanisms or random selection.
