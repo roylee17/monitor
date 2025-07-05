@@ -4,6 +4,8 @@
 
 This document describes the implementation of peer discovery for ICS consumer chains using LoadBalancer services. The system enables validators in different Kubernetes clusters to discover and connect to each other's consumer chains while strictly following ICS (Interchain Security) specifications.
 
+**Note**: The monitor implementation uses a single, unified peer discovery approach based on LoadBalancer services. Alternative discovery modes (DNS-based, NodePort-based, provider network-based) have been removed to simplify the codebase and ensure consistent behavior across all deployments.
+
 ## Core Principles
 
 ### 1. ICS Compliance
@@ -254,24 +256,35 @@ func buildConsumerGenesis(ccvPatch CCVGenesis, consumerID string) Genesis {
 
 ### 6. Peer Discovery
 
+The monitor uses a simplified LoadBalancer-based peer discovery approach:
+
 ```go
-func discoverPeers(chainID string, initialValSet []Validator) []string {
-    // 1. Query on-chain validator registry for external endpoints
-    registry := queryValidatorRegistry()
+func discoverPeersWithLoadBalancer(chainID string, optedInValidators []string) []string {
+    // 1. Get validator endpoints from on-chain registry
+    // These are LoadBalancer addresses registered by validators
+    endpoints := getValidatorEndpoints()
     
-    // 2. Calculate consumer port
-    port := calculatePort(chainID)
+    // 2. Calculate deterministic consumer P2P port
+    port := calculateConsumerP2PPort(chainID)
     
-    // 3. Build peer list ONLY from initial validator set
+    // 3. Build peer list from opted-in validators
     var peers []string
-    for _, validator := range initialValSet {
-        // Get external endpoint from registry
-        endpoint := registry[validator.Moniker].P2PEndpoint
+    for _, validatorName := range optedInValidators {
+        if validatorName == localValidator {
+            continue // Skip self
+        }
         
-        // Get node ID from GetNodeInfo API or derive from node key
-        nodeInfo := queryNodeInfo(validator.RPCEndpoint)
-        nodeID := nodeInfo.DefaultNodeInfo.ID
+        // Get LoadBalancer endpoint from registry
+        endpoint := endpoints[validatorName]
+        if endpoint == "" {
+            log.Warn("No endpoint found for validator", validatorName)
+            continue
+        }
         
+        // Calculate deterministic node ID for consumer chain
+        nodeID := generateNodeID(validatorName, chainID)
+        
+        // Build peer address: nodeID@loadbalancer:port
         peer := fmt.Sprintf("%s@%s:%d", nodeID, endpoint, port)
         peers = append(peers, peer)
     }
@@ -279,6 +292,12 @@ func discoverPeers(chainID string, initialValSet []Validator) []string {
     return peers
 }
 ```
+
+**Key Points:**
+- All peer discovery uses LoadBalancer addresses exclusively
+- No DNS-based or provider network-based discovery modes
+- Validators must register their LoadBalancer endpoints on-chain
+- Node IDs are generated deterministically for consumer chains
 
 ## Technical Details
 
