@@ -1249,13 +1249,13 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 				}
 
 				// Check if local validator is in the CCV genesis initial validator set
-				isInInitialSet, err := h.isLocalValidatorInInitialSet(ctx.CCVPatch, consumerID)
+				keyInfo, err := h.isLocalValidatorInInitialSet(ctx.CCVPatch, consumerID)
 				if err != nil {
 					h.logger.Error("Failed to check if local validator is in initial set", "error", err)
 					return err
 				}
 				
-				if !isInInitialSet {
+				if !keyInfo.Found {
 					h.logger.Info("Local validator is NOT in the CCV genesis initial validator set, skipping deployment",
 						"chain_id", chainID,
 						"consumer_id", consumerID,
@@ -1266,33 +1266,60 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 				h.logger.Info("Local validator IS in the CCV genesis initial validator set, proceeding with deployment",
 					"chain_id", chainID,
 					"consumer_id", consumerID,
-					"local_validator", h.validatorSelector.GetFromKey())
+					"local_validator", h.validatorSelector.GetFromKey(),
+					"key_type", keyInfo.KeyType,
+					"key_value", keyInfo.KeyValue)
 
 				// Note: The CCV patch already contains the correct keys:
 				// - Consumer keys for validators who assigned them
 				// - Provider keys for validators who didn't assign them
 				// No manual update is needed.
 
-				// Check for assigned consumer key
+				// Smart key selection: Use the key that's in the initial validator set
 				var consumerKey *ConsumerKeyInfo
-				if h.consumerKeyStore != nil && h.validatorSelector != nil {
-					// Get local validator name
-					localValidatorName := h.validatorSelector.GetFromKey()
-					if localValidatorName != "" {
-						keyInfo, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
-						if err != nil {
-							h.logger.Warn("No consumer key found for validator",
+				
+				if keyInfo.KeyType == KeyTypeConsumer {
+					// Initial set has consumer key - we MUST use the consumer key
+					h.logger.Info("Initial validator set contains CONSUMER key, will use consumer key for deployment",
+						"consumer_id", consumerID)
+					
+					if h.consumerKeyStore != nil && h.validatorSelector != nil {
+						localValidatorName := h.validatorSelector.GetFromKey()
+						if localValidatorName != "" {
+							storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
+							if err != nil {
+								h.logger.Error("Initial set has consumer key but not found in store",
+									"validator", localValidatorName,
+									"consumer_id", consumerID,
+									"error", err)
+								return fmt.Errorf("consumer key in initial set but not found locally: %w", err)
+							}
+							consumerKey = storedKey
+							h.logger.Info("Using stored consumer key for deployment",
 								"validator", localValidatorName,
 								"consumer_id", consumerID,
-								"error", err)
-						} else {
-							h.logger.Info("Found assigned consumer key",
-								"validator", localValidatorName,
-								"consumer_id", consumerID,
-								"pubkey", keyInfo.ConsumerPubKey)
-							consumerKey = keyInfo
+								"pubkey", storedKey.ConsumerPubKey)
 						}
 					}
+				} else {
+					// Initial set has provider key - we MUST use provider key (even if consumer key was assigned)
+					h.logger.Info("Initial validator set contains PROVIDER key, will use provider key for deployment",
+						"consumer_id", consumerID)
+					
+					// Check if a consumer key was assigned (for logging purposes)
+					if h.consumerKeyStore != nil && h.validatorSelector != nil {
+						localValidatorName := h.validatorSelector.GetFromKey()
+						if localValidatorName != "" {
+							if storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName); err == nil && storedKey != nil {
+								h.logger.Warn("Consumer key was assigned but initial set has provider key - using provider key",
+									"validator", localValidatorName,
+									"consumer_id", consumerID,
+									"assigned_consumer_key", storedKey.ConsumerPubKey,
+									"reason", "Key assignment happened after spawn time")
+							}
+						}
+					}
+					// consumerKey remains nil to use provider key
 				}
 
 				// Deploy with dynamic peer discovery from provider chain
@@ -1553,19 +1580,36 @@ func (h *ConsumerHandler) handleConsensusKeyAssignment(ctx context.Context, even
 
 // Removed: updateCCVPatchWithAssignedKeys function (obsolete)
 
+// ValidatorKeyType indicates which type of key was found in the initial validator set
+type ValidatorKeyType string
+
+const (
+	KeyTypeProvider ValidatorKeyType = "provider"
+	KeyTypeConsumer ValidatorKeyType = "consumer"
+)
+
+// ValidatorKeyInfo contains information about the key found in initial validator set
+type InitialSetKeyInfo struct {
+	Found    bool
+	KeyType  ValidatorKeyType
+	KeyValue string // Base64 encoded public key
+}
+
 // isLocalValidatorInInitialSet checks if the local validator is in the CCV genesis initial validator set
 // IMPORTANT: The initial validator set contains:
 // - CONSUMER consensus keys for validators who assigned consumer keys
 // - PROVIDER consensus keys for validators who did NOT assign consumer keys
-func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (bool, error) {
+//
+// Returns: InitialSetKeyInfo with details about which key was found
+func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (*InitialSetKeyInfo, error) {
 	if h.validatorSelector == nil {
-		return false, fmt.Errorf("validator selector not available")
+		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("validator selector not available")
 	}
 	
 	// Get our local validator's provider consensus key
 	localProviderKey, err := h.getLocalProviderConsensusKey()
 	if err != nil {
-		return false, fmt.Errorf("failed to get local provider consensus key: %w", err)
+		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("failed to get local provider consensus key: %w", err)
 	}
 	
 	// Navigate to the initial validator set in the CCV patch
@@ -1588,7 +1632,7 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	}
 	
 	if initialValSet == nil {
-		return false, fmt.Errorf("initial_val_set not found in CCV patch")
+		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("initial_val_set not found in CCV patch")
 	}
 	
 	h.logger.Info("Checking if local validator is in initial validator set",
@@ -1616,7 +1660,11 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 		if ed25519Key == localProviderKey {
 			h.logger.Info("Found local validator in initial validator set with PROVIDER key",
 				"matching_key", localProviderKey)
-			return true, nil
+			return &InitialSetKeyInfo{
+				Found:    true,
+				KeyType:  KeyTypeProvider,
+				KeyValue: localProviderKey,
+			}, nil
 		}
 	}
 	
@@ -1627,11 +1675,11 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	localValidatorName, err := h.validatorSelector.GetLocalValidatorMoniker()
 	if err != nil {
 		h.logger.Error("Failed to get local validator moniker", "error", err)
-		return false, err
+		return &InitialSetKeyInfo{Found: false}, err
 	}
 	if localValidatorName == "" {
 		h.logger.Warn("Could not determine local validator name")
-		return false, nil
+		return &InitialSetKeyInfo{Found: false}, nil
 	}
 	
 	// Check if we have a stored consumer key assignment
@@ -1664,7 +1712,11 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 					if ed25519Key == consumerPubKey {
 						h.logger.Info("Found local validator in initial validator set with CONSUMER key",
 							"matching_key", consumerPubKey)
-						return true, nil
+						return &InitialSetKeyInfo{
+							Found:    true,
+							KeyType:  KeyTypeConsumer,
+							KeyValue: consumerPubKey,
+						}, nil
 					}
 				}
 			}
@@ -1675,7 +1727,7 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 		"provider_key", localProviderKey,
 		"initial_set_validators", len(initialValSet))
 	
-	return false, nil
+	return &InitialSetKeyInfo{Found: false}, nil
 }
 
 // getLocalProviderConsensusKey returns the base64-encoded consensus public key of the local validator
