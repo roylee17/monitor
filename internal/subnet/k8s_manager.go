@@ -2,8 +2,6 @@ package subnet
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -485,26 +483,8 @@ func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndKeys(ctx context.Contex
 	}
 
 	// Add consumer validator key if provided
-	if consumerKey != nil && len(consumerKey.PrivateKey) > 0 {
-		// Create the priv_validator_key.json structure
-		privKeyJSON := map[string]interface{}{
-			"address": consumerKey.ConsumerAddress,
-			"pub_key": map[string]interface{}{
-				"type":  "tendermint/PubKeyEd25519",
-				"value": base64.StdEncoding.EncodeToString(consumerKey.PrivateKey[32:]), // Ed25519 public key is last 32 bytes
-			},
-			"priv_key": map[string]interface{}{
-				"type":  "tendermint/PrivKeyEd25519",
-				"value": base64.StdEncoding.EncodeToString(consumerKey.PrivateKey), // Full 64 bytes
-			},
-		}
-
-		privKeyData, err := json.Marshal(privKeyJSON)
-		if err != nil {
-			return fmt.Errorf("failed to marshal consumer key: %w", err)
-		}
-
-		deploymentConfig.ConsumerKeyJSON = string(privKeyData)
+	if consumerKey != nil && consumerKey.PrivValidatorKeyJSON != "" {
+		deploymentConfig.ConsumerKeyJSON = consumerKey.PrivValidatorKeyJSON
 		m.logger.Info("Including consumer validator key in deployment",
 			"validator", validatorName,
 			"consumer_id", consumerID)

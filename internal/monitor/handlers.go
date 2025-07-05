@@ -156,15 +156,39 @@ func (h *CCVHandler) handleOptInEvent(ctx context.Context, event Event) error {
 		"consumer_id", consumerID,
 		"pubkey", pubKey.String())
 
+	// Create the priv_validator_key.json structure
+	privKeyBytes := privKey.Bytes()
+	pubKeyBytes := pubKey.Bytes()
+	
+	// Calculate the consensus address (first 20 bytes of SHA256 of pubkey)
+	address := sdk.ConsAddress(pubKey.Address())
+	
+	privValidatorKey := map[string]interface{}{
+		"address": strings.ToUpper(hex.EncodeToString(address)),
+		"pub_key": map[string]interface{}{
+			"type":  "tendermint/PubKeyEd25519",
+			"value": base64.StdEncoding.EncodeToString(pubKeyBytes),
+		},
+		"priv_key": map[string]interface{}{
+			"type":  "tendermint/PrivKeyEd25519",
+			"value": base64.StdEncoding.EncodeToString(privKeyBytes),
+		},
+	}
+	
+	privValidatorKeyJSON, err := json.Marshal(privValidatorKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal priv_validator_key: %w", err)
+	}
+
 	// Store the key (will be stored in ConfigMap after successful assignment)
 	keyInfo := &ConsumerKeyInfo{
-		ValidatorName:    localValidatorMoniker,
-		ConsumerID:       consumerID,
-		ConsumerPubKey:   pubKey.String(),
-		ConsumerAddress:  "", // Will be set later
-		ProviderAddress:  submitterAddr,
-		AssignmentHeight: event.Height,
-		PrivateKey:       privKey.Bytes(), // Store the private key
+		ValidatorName:        localValidatorMoniker,
+		ConsumerID:           consumerID,
+		ConsumerPubKey:       pubKey.String(),
+		ConsumerAddress:      "", // Will be set later
+		ProviderAddress:      submitterAddr,
+		AssignmentHeight:     event.Height,
+		PrivValidatorKeyJSON: string(privValidatorKeyJSON),
 	}
 
 	// Submit the consumer key assignment transaction
@@ -1330,7 +1354,7 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 							
 							// Load provider's priv_validator_key.json from Kubernetes secret
 							secretName := fmt.Sprintf("%s-keys", localValidatorName)
-							secret, err := h.k8sManager.GetK8sClient().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
+							secret, err := h.k8sManager.GetClientset().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
 							if err != nil {
 								return fmt.Errorf("failed to get provider key secret: %w", err)
 							}
@@ -1353,13 +1377,13 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 							
 							// Create ConsumerKeyInfo with provider key details
 							consumerKey = &ConsumerKeyInfo{
-								ValidatorName:    localValidatorName,
-								ConsumerID:       consumerID,
-								ConsumerPubKey:   providerConsensusPubKey, // Use the provider's consensus key
-								ConsumerAddress:  addr.String(),
-								ProviderAddress:  addr.String(),
-								AssignmentHeight: 0, // Not assigned, using provider key
-								PrivateKey:       privValidatorKeyData, // The entire priv_validator_key.json content
+								ValidatorName:        localValidatorName,
+								ConsumerID:           consumerID,
+								ConsumerPubKey:       providerConsensusPubKey, // Use the provider's consensus key
+								ConsumerAddress:      addr.String(),
+								ProviderAddress:      addr.String(),
+								AssignmentHeight:     0, // Not assigned, using provider key
+								PrivValidatorKeyJSON: string(privValidatorKeyData), // The entire priv_validator_key.json content
 							}
 							
 							h.logger.Info("Using provider key for consumer deployment",
@@ -1482,13 +1506,13 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 				var subnetKeyInfo *subnet.ConsumerKeyInfo
 				if consumerKey != nil {
 					subnetKeyInfo = &subnet.ConsumerKeyInfo{
-						ValidatorName:    consumerKey.ValidatorName,
-						ConsumerID:       consumerKey.ConsumerID,
-						ConsumerPubKey:   consumerKey.ConsumerPubKey,
-						ConsumerAddress:  consumerKey.ConsumerAddress,
-						ProviderAddress:  consumerKey.ProviderAddress,
-						AssignmentHeight: consumerKey.AssignmentHeight,
-						PrivateKey:       consumerKey.PrivateKey,
+						ValidatorName:        consumerKey.ValidatorName,
+						ConsumerID:           consumerKey.ConsumerID,
+						ConsumerPubKey:       consumerKey.ConsumerPubKey,
+						ConsumerAddress:      consumerKey.ConsumerAddress,
+						ProviderAddress:      consumerKey.ProviderAddress,
+						AssignmentHeight:     consumerKey.AssignmentHeight,
+						PrivValidatorKeyJSON: consumerKey.PrivValidatorKeyJSON,
 					}
 				}
 
