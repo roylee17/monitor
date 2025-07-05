@@ -1874,12 +1874,21 @@ func (h *ConsumerHandler) getValidatorNameFromAddress(address string) string {
 	return name
 }
 
+// ConsumerRegistry provides access to consumer chain information
+type ConsumerRegistry interface {
+	GetActiveConsumers(ctx context.Context) ([]ConsumerInfo, error)
+	GetOptedInValidators(ctx context.Context, consumerID string) ([]string, error)
+}
+
 // ValidatorUpdateHandler handles validator update events including P2P endpoint changes
 type ValidatorUpdateHandler struct {
 	logger            *slog.Logger
 	peerDiscovery     *subnet.PeerDiscovery
 	validatorRegistry *ValidatorRegistry
 	stakingClient     stakingtypes.QueryClient
+	// TODO: Add these fields when implementing automatic consumer chain updates
+	// consumerRegistry  ConsumerRegistry // Interface to get active consumers
+	// k8sManager        K8sManagerInterface // Interface to update deployments
 }
 
 // NewValidatorUpdateHandler creates a new validator update event handler
@@ -1955,6 +1964,19 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 				"total_endpoints", len(monikerEndpoints),
 				"changes", len(changes),
 				"details", changes)
+				
+			// TODO: Implement automatic consumer chain updates
+			// This would require:
+			// 1. Finding all active consumer chains
+			// 2. Checking which validators are opted in to each chain
+			// 3. For chains where an updated validator is opted in:
+			//    - Update the peer list in the ConfigMap
+			//    - Trigger a rolling restart of the consumer chain pods
+			// 
+			// For now, log a warning that manual intervention may be needed
+			h.logger.Warn("Validator endpoint changes detected - consumer chains may need manual update",
+				"affected_validators", len(changes),
+				"note", "Consumer chains using these validators may need their peer configurations updated")
 		} else {
 			h.logger.Debug("No changes in validator endpoints after edit_validator event")
 		}
@@ -2039,3 +2061,4 @@ func (h *ConsumerHandler) refreshValidatorMappings(ctx context.Context) error {
 	h.logger.Info("Refreshed validator mappings", "validator_count", len(validators))
 	return nil
 }
+
