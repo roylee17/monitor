@@ -12,8 +12,10 @@ This document describes the implementation of peer discovery for ICS consumer ch
 
 - **Only validators in the initial validator set deploy consumer chains**
 - Initial validator set is determined at spawn time by the provider chain
-- Initial validator set always contains provider consensus keys for consistent identification
-- Consumer key assignments are handled separately during genesis construction
+- Initial validator set contains the keys that will be used for consensus:
+  - Consumer consensus keys for validators who assigned consumer keys before spawn time
+  - Provider consensus keys for validators who did NOT assign consumer keys
+- The provider chain automatically handles this when generating the CCV patch
 - No random subset selection or pre-determination of validators
 - Monitors must honor the provider chain's CCV genesis
 
@@ -203,7 +205,11 @@ func HandlePhaseTransition(consumerID, chainID string, newPhase string) {
 
 ### 4. Initial Validator Set Checking
 
-The CCV genesis initial validator set always contains the provider's consensus public key, regardless of whether a validator has assigned a consumer key. This ensures consistent validator identification across all monitors.
+**CRITICAL**: The CCV genesis initial validator set contains different keys based on consumer key assignments:
+- **If validator assigned a consumer key**: The initial set contains the CONSUMER consensus key
+- **If validator did NOT assign a consumer key**: The initial set contains the PROVIDER consensus key
+
+This means monitors must check BOTH their provider key AND any assigned consumer key when determining if they're in the initial validator set.
 
 ```go
 func isLocalValidatorInInitialSet(ccvGenesis CCVGenesis) bool {
@@ -225,27 +231,16 @@ func isLocalValidatorInInitialSet(ccvGenesis CCVGenesis) bool {
 
 ### 5. Deterministic Genesis Construction
 
-When building the consumer genesis, monitors must construct it identically to ensure all validators have the same genesis hash:
+When building the consumer genesis, monitors must ensure all validators have identical genesis files:
 
 ```go
 func buildConsumerGenesis(ccvPatch CCVGenesis, consumerID string) Genesis {
-    // CCV patch already contains initial validator set with correct keys
+    // The CCV patch from the provider chain already contains the correct keys:
+    // - Consumer keys for validators who assigned them
+    // - Provider keys for validators who didn't assign them
+    // No manual key updates are needed.
+    
     genesis := ccvPatch
-    
-    // Query all key assignments to update validator keys in genesis
-    // GET /interchain_security/ccv/provider/address_pairs/{consumer_id}
-    keyAssignments := queryAddressPairs(consumerID)
-    
-    // Update genesis validators with assigned keys
-    for i, validator := range genesis.Provider.InitialValSet {
-        for _, pair := range keyAssignments.PairValConAddr {
-            if validator.Address == pair.ProviderAddress && pair.ConsumerKey != "" {
-                // Update to use assigned consumer key
-                genesis.Provider.InitialValSet[i].PubKey = pair.ConsumerKey
-                break
-            }
-        }
-    }
     
     // Sort all fields to ensure deterministic ordering
     sortGenesisFields(&genesis)
@@ -253,6 +248,8 @@ func buildConsumerGenesis(ccvPatch CCVGenesis, consumerID string) Genesis {
     return genesis
 }
 ```
+
+The key insight is that the provider chain's CCV patch is authoritative and already contains the correct validator keys based on which validators assigned consumer keys before spawn time.
 
 ### 6. Peer Discovery
 

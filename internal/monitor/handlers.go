@@ -2,13 +2,11 @@ package monitor
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -1270,11 +1268,10 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 					"consumer_id", consumerID,
 					"local_validator", h.validatorSelector.GetFromKey())
 
-				// Update the CCV genesis patch with assigned consumer keys
-				if err := h.updateCCVPatchWithAssignedKeys(ctx.CCVPatch, consumerID); err != nil {
-					h.logger.Error("Failed to update CCV patch with assigned keys", "error", err)
-					// Continue anyway, as this is not critical
-				}
+				// Note: The CCV patch already contains the correct keys:
+				// - Consumer keys for validators who assigned them
+				// - Provider keys for validators who didn't assign them
+				// No manual update is needed.
 
 				// Check for assigned consumer key
 				var consumerKey *ConsumerKeyInfo
@@ -1485,7 +1482,7 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 // 1. Extracts all required attributes from the event
 // 2. Determines the validator name from the provider address
 // 3. Stores the key assignment in ConsumerKeyStore for later use
-// 4. The stored keys are used by updateCCVPatchWithAssignedKeys during deployment
+// 4. The stored keys are used by the deployment process to identify the local validator
 //
 // Error Handling:
 //   - Missing validator name is logged but not fatal (returns nil)
@@ -1544,131 +1541,22 @@ func (h *ConsumerHandler) handleConsensusKeyAssignment(ctx context.Context, even
 	return nil
 }
 
-// updateCCVPatchWithAssignedKeys updates the CCV genesis patch to replace validator public keys
-// with their assigned consumer keys from the ConsumerKeyStore.
+// OBSOLETE: The CCV patch from the provider chain already contains the correct keys.
+// The initial validator set automatically includes:
+// - Consumer keys for validators who assigned them before spawn time
+// - Provider keys for validators who didn't assign consumer keys
+// No manual update is needed.
 //
-// CRITICAL FUNCTION: This function is essential for consumer chains to produce blocks.
-// Without properly updating the validator keys, the consumer chain will have an empty
-// validator set and cannot produce blocks.
-//
-// Behavior:
-// 1. Retrieves all validators from the provider chain and builds a pubkey->name mapping
-// 2. Looks up assigned consumer keys from the ConsumerKeyStore for each validator
-// 3. Updates the initial_val_set in the CCV patch with the assigned consumer keys
-// 4. Handles multiple key formats: JSON format and PubKeyEd25519{hex} format
-//
-// Parameters:
-//   - ccvPatch: The CCV genesis patch containing initial_val_set to update
-//   - consumerID: The consumer chain ID to look up assigned keys for
-//
-// Returns:
-//   - error if the patch structure is invalid or key parsing fails
-//
-// Key Requirements:
-//   - ConsumerKeyStore must be available and contain assigned keys
-//   - ValidatorSelector must be available to map pubkeys to validator names
-//   - The CCV patch must have the expected structure: app_state.ccvconsumer.provider.initial_val_set
-//
-// Common Issues:
-//   - If validators haven't assigned consumer keys yet, they won't be updated
-//   - Pubkey format mismatches can cause validators to not be found
-//   - The function continues on errors for individual validators (non-fatal)
-func (h *ConsumerHandler) updateCCVPatchWithAssignedKeys(ccvPatch map[string]interface{}, consumerID string) error {
-	if h.consumerKeyStore == nil {
-		h.logger.Debug("ConsumerKeyStore not available, skipping key update")
-		return nil
-	}
+// Keeping this comment for historical context on what this function used to do:
+// It would manually replace provider keys with consumer keys in the CCV patch,
+// but this is unnecessary as the provider chain already handles this correctly.
 
-	// Navigate to the initial validator set
-	// The CCV patch structure can vary depending on the query method
-	// Try the direct provider structure first (query provider consumer-genesis)
-	var initialValSet []interface{}
-	
-	if provider, ok := ccvPatch["provider"].(map[string]interface{}); ok {
-		// Direct structure: provider.initial_val_set
-		if valSet, ok := provider["initial_val_set"].([]interface{}); ok {
-			initialValSet = valSet
-		}
-	} else if appState, ok := ccvPatch["app_state"].(map[string]interface{}); ok {
-		// Nested structure: app_state.ccvconsumer.provider.initial_val_set
-		if ccvConsumer, ok := appState["ccvconsumer"].(map[string]interface{}); ok {
-			if provider, ok := ccvConsumer["provider"].(map[string]interface{}); ok {
-				if valSet, ok := provider["initial_val_set"].([]interface{}); ok {
-					initialValSet = valSet
-				}
-			}
-		}
-	}
-	
-	if initialValSet == nil || len(initialValSet) == 0 {
-		return fmt.Errorf("initial_val_set not found or empty in CCV patch")
-	}
-
-	h.logger.Info("Updating CCV patch with assigned consumer keys",
-		"consumer_id", consumerID,
-		"validator_count", len(initialValSet))
-
-	// Query the provider chain for validator consensus address pairs
-	// This gives us the mapping of provider keys to assigned consumer keys
-	providerToConsumerKey, err := h.queryValidatorConsensusPairs(consumerID)
-	if err != nil {
-		h.logger.Error("Failed to query validator consensus pairs", "error", err)
-		// Fall back to using stored keys only
-		providerToConsumerKey = make(map[string]string)
-	}
-
-	h.logger.Info("Queried validator consensus pairs",
-		"consumer_id", consumerID,
-		"mapping_count", len(providerToConsumerKey))
-
-	// Update each validator in initial_val_set
-	updatedCount := 0
-	for _, val := range initialValSet {
-		validator, ok := val.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Get the current pubkey from the validator
-		pubKeyMap, ok := validator["pub_key"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Extract the ed25519 key (this is the provider key)
-		currentPubKey, ok := pubKeyMap["ed25519"].(string)
-		if !ok {
-			continue
-		}
-
-		// Check if we have a consumer key mapping for this provider key
-		consumerKey, hasMapping := providerToConsumerKey[currentPubKey]
-		if hasMapping {
-			// Update the validator's public key with the assigned consumer key
-			validator["pub_key"] = map[string]interface{}{
-				"ed25519": consumerKey,
-			}
-			updatedCount++
-			h.logger.Info("Updated validator with assigned consumer key from consensus pairs",
-				"provider_pubkey", currentPubKey,
-				"consumer_key", consumerKey,
-				"consumer_id", consumerID)
-		} else {
-			h.logger.Debug("No consumer key mapping found for provider key",
-				"provider_pubkey", currentPubKey)
-		}
-	}
-
-	h.logger.Info("Completed CCV patch update with assigned keys",
-		"consumer_id", consumerID,
-		"updated_count", updatedCount,
-		"total_validators", len(initialValSet))
-
-	return nil
-}
+// Removed: updateCCVPatchWithAssignedKeys function (obsolete)
 
 // isLocalValidatorInInitialSet checks if the local validator is in the CCV genesis initial validator set
-// According to the design, the initial validator set ALWAYS contains provider consensus keys
+// IMPORTANT: The initial validator set contains:
+// - CONSUMER consensus keys for validators who assigned consumer keys
+// - PROVIDER consensus keys for validators who did NOT assign consumer keys
 func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (bool, error) {
 	if h.validatorSelector == nil {
 		return false, fmt.Errorf("validator selector not available")
@@ -1707,7 +1595,7 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 		"provider_consensus_key", localProviderKey,
 		"initial_set_size", len(initialValSet))
 	
-	// Check if our provider key is in the initial set
+	// Check if our provider key is in the initial set (no consumer key assigned case)
 	for _, val := range initialValSet {
 		validator, ok := val.(map[string]interface{})
 		if !ok {
@@ -1726,9 +1614,60 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 		
 		// Compare with our provider consensus key
 		if ed25519Key == localProviderKey {
-			h.logger.Info("Found local validator in initial validator set",
+			h.logger.Info("Found local validator in initial validator set with PROVIDER key",
 				"matching_key", localProviderKey)
 			return true, nil
+		}
+	}
+	
+	// If not found with provider key, check if we have an assigned consumer key
+	h.logger.Info("Provider key not found in initial set, checking for assigned consumer key")
+	
+	// Get local validator name
+	localValidatorName, err := h.validatorSelector.GetLocalValidatorMoniker()
+	if err != nil {
+		h.logger.Error("Failed to get local validator moniker", "error", err)
+		return false, err
+	}
+	if localValidatorName == "" {
+		h.logger.Warn("Could not determine local validator name")
+		return false, nil
+	}
+	
+	// Check if we have a stored consumer key assignment
+	if h.consumerKeyStore != nil {
+		consumerKey, err := h.consumerKeyStore.GetConsumerKey(localValidatorName, consumerID)
+		if err == nil && consumerKey != nil {
+			// Extract the public key from the consumer key info
+			consumerPubKey := extractPubKeyFromConsensusKey(consumerKey.ConsumerPubKey)
+			if consumerPubKey != "" {
+				h.logger.Info("Checking if local validator's CONSUMER key is in initial set",
+					"consumer_key", consumerPubKey)
+				
+				// Check if our consumer key is in the initial set
+				for _, val := range initialValSet {
+					validator, ok := val.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					
+					pubKeyMap, ok := validator["pub_key"].(map[string]interface{})
+					if !ok {
+						continue
+					}
+					
+					ed25519Key, ok := pubKeyMap["ed25519"].(string)
+					if !ok {
+						continue
+					}
+					
+					if ed25519Key == consumerPubKey {
+						h.logger.Info("Found local validator in initial validator set with CONSUMER key",
+							"matching_key", consumerPubKey)
+						return true, nil
+					}
+				}
+			}
 		}
 	}
 	
@@ -1900,142 +1839,8 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 	return nil
 }
 
-// queryValidatorConsensusPairs queries the provider chain for validator consensus address pairs
-// This returns the mapping between provider validators and their assigned consumer keys
-func (h *ConsumerHandler) queryValidatorConsensusPairs(consumerID string) (map[string]string, error) {
-	// Get the RPC endpoint from the client
-	rpcEndpoint := h.rpcClient.Remote()
-	h.logger.Info("Querying validator consensus pairs",
-		"consumer_id", consumerID,
-		"rpc_endpoint", rpcEndpoint)
-	
-	// Query the provider chain directly using the chain binary
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	
-	cmd := exec.CommandContext(ctx, "interchain-security-pd", "query", "provider", 
-		"all-pairs-valconsensus-address", consumerID,
-		"--node", rpcEndpoint,
-		"--output", "json",
-		"--home", "/tmp")
-	
-	h.logger.Debug("Executing query command for validator pairs",
-		"cmd", cmd.String())
-	
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		h.logger.Error("Failed to query validator pairs",
-			"error", err,
-			"output", string(output))
-		return nil, fmt.Errorf("failed to query validator pairs: %w, output: %s", err, string(output))
-	}
-	
-	h.logger.Debug("Successfully queried validator pairs",
-		"output_size", len(output))
-
-	// Parse the response
-	var pairsResponse struct {
-		PairValConAddr []struct {
-			ProviderAddress string `json:"provider_address"`
-			ConsumerAddress string `json:"consumer_address"`
-			ConsumerKey     struct {
-				Ed25519 string `json:"ed25519"`
-			} `json:"consumer_key"`
-		} `json:"pair_val_con_addr"`
-	}
-
-	if err := json.Unmarshal(output, &pairsResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse validator pairs response: %w", err)
-	}
-
-	// Build a map of provider pubkeys to consumer keys
-	// We need to map provider pubkeys (from initial_val_set) to consumer keys
-	providerPubkeyToConsumerKey := make(map[string]string)
-	
-	// Query the validators to get their pubkeys and build the mapping
-	h.logger.Info("Querying validators for pubkey mapping")
-	
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel2()
-	
-	validatorsCmd := exec.CommandContext(ctx2, "interchain-security-pd", "query", "staking", "validators",
-		"--node", rpcEndpoint,
-		"--output", "json",
-		"--home", "/tmp")
-	
-	h.logger.Debug("Executing validators query command",
-		"cmd", validatorsCmd.String())
-	
-	validatorsOutput, err := validatorsCmd.CombinedOutput()
-	if err != nil {
-		h.logger.Error("Failed to query validators",
-			"error", err,
-			"output", string(validatorsOutput))
-		return nil, fmt.Errorf("failed to query validators: %w, output: %s", err, string(validatorsOutput))
-	}
-
-	var validatorsResponse struct {
-		Validators []struct {
-			OperatorAddress string `json:"operator_address"`
-			ConsensusPubkey struct {
-				Type  string `json:"type"`
-				Value string `json:"value"`
-			} `json:"consensus_pubkey"`
-		} `json:"validators"`
-	}
-	
-	if err := json.Unmarshal(validatorsOutput, &validatorsResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse validators response: %w", err)
-	}
-	
-	// Create a map of consensus address to provider pubkey
-	// We need to convert operator addresses to consensus addresses
-	consensusAddrToPubkey := make(map[string]string)
-	for _, val := range validatorsResponse.Validators {
-		// The consensus pubkey is what we need to match against the initial_val_set
-		consensusAddrToPubkey[val.OperatorAddress] = val.ConsensusPubkey.Value
-	}
-	
-	// Build a map from provider consensus address to pubkey
-	addrToPubkey := make(map[string]string)
-	for _, val := range validatorsResponse.Validators {
-		// Convert operator address to consensus address
-		// We need to decode the consensus pubkey to get the address
-		pubkeyBytes, err := base64.StdEncoding.DecodeString(val.ConsensusPubkey.Value)
-		if err != nil {
-			h.logger.Warn("Failed to decode validator pubkey", "error", err)
-			continue
-		}
-		
-		// Calculate the consensus address from the pubkey
-		// This is SHA256(pubkey)[:20]
-		hash := sha256.Sum256(pubkeyBytes)
-		consensusAddr := sdk.ConsAddress(hash[:20])
-		
-		// Store the mapping
-		addrToPubkey[consensusAddr.String()] = val.ConsensusPubkey.Value
-	}
-	
-	// Now map the provider pubkeys to consumer keys using the pairs response
-	for _, pair := range pairsResponse.PairValConAddr {
-		if pair.ConsumerKey.Ed25519 != "" && pair.ProviderAddress != "" {
-			// Look up the provider pubkey for this consensus address
-			if providerPubkey, ok := addrToPubkey[pair.ProviderAddress]; ok {
-				providerPubkeyToConsumerKey[providerPubkey] = pair.ConsumerKey.Ed25519
-				h.logger.Debug("Mapped provider pubkey to consumer key",
-					"provider_addr", pair.ProviderAddress,
-					"provider_pubkey", providerPubkey,
-					"consumer_key", pair.ConsumerKey.Ed25519)
-			}
-		}
-	}
-	
-	h.logger.Info("Built provider to consumer key mapping",
-		"consumer_id", consumerID,
-		"mapping_count", len(providerPubkeyToConsumerKey))
-	
-	return providerPubkeyToConsumerKey, nil
-}
+// OBSOLETE: queryValidatorConsensusPairs was used by the obsolete updateCCVPatchWithAssignedKeys function.
+// It's no longer needed because the CCV patch already contains the correct keys from the provider chain.
 
 // extractPubKeyFromConsensusKey extracts the base64 pubkey from consensus key string.
 //
