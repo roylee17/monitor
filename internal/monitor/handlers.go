@@ -22,6 +22,7 @@ import (
 	"github.com/cosmos/interchain-security-monitor/internal/selector"
 	"github.com/cosmos/interchain-security-monitor/internal/subnet"
 	"github.com/cosmos/interchain-security-monitor/internal/transaction"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // CCVHandler handles CCV module events
@@ -1306,20 +1307,67 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 					h.logger.Info("Initial validator set contains PROVIDER key, will use provider key for deployment",
 						"consumer_id", consumerID)
 					
-					// Check if a consumer key was assigned (for logging purposes)
-					if h.consumerKeyStore != nil && h.validatorSelector != nil {
+					// Get the provider key to use for deployment
+					if h.validatorSelector != nil {
 						localValidatorName := h.validatorSelector.GetFromKey()
 						if localValidatorName != "" {
-							if storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName); err == nil && storedKey != nil {
-								h.logger.Warn("Consumer key was assigned but initial set has provider key - using provider key",
-									"validator", localValidatorName,
-									"consumer_id", consumerID,
-									"assigned_consumer_key", storedKey.ConsumerPubKey,
-									"reason", "Key assignment happened after spawn time")
+							// Check if a consumer key was assigned (for logging purposes)
+							if h.consumerKeyStore != nil {
+								if storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName); err == nil && storedKey != nil {
+									h.logger.Warn("Consumer key was assigned but initial set has provider key - using provider key",
+										"validator", localValidatorName,
+										"consumer_id", consumerID,
+										"assigned_consumer_key", storedKey.ConsumerPubKey,
+										"reason", "Key assignment happened after spawn time")
+								}
 							}
+							
+							// Get provider consensus public key
+							providerConsensusPubKey, err := h.getLocalProviderConsensusKey()
+							if err != nil {
+								return fmt.Errorf("failed to get provider consensus key: %w", err)
+							}
+							
+							// Load provider's priv_validator_key.json from Kubernetes secret
+							secretName := fmt.Sprintf("%s-keys", localValidatorName)
+							secret, err := h.k8sManager.GetK8sClient().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
+							if err != nil {
+								return fmt.Errorf("failed to get provider key secret: %w", err)
+							}
+							
+							privValidatorKeyData, ok := secret.Data["priv_validator_key.json"]
+							if !ok {
+								return fmt.Errorf("priv_validator_key.json not found in secret %s", secretName)
+							}
+							
+							// Get provider address from keyring
+							keyInfo, err := h.clientCtx.Keyring.Key(localValidatorName)
+							if err != nil {
+								return fmt.Errorf("failed to load provider key from keyring: %w", err)
+							}
+							
+							addr, err := keyInfo.GetAddress()
+							if err != nil {
+								return fmt.Errorf("failed to get address from key info: %w", err)
+							}
+							
+							// Create ConsumerKeyInfo with provider key details
+							consumerKey = &ConsumerKeyInfo{
+								ValidatorName:    localValidatorName,
+								ConsumerID:       consumerID,
+								ConsumerPubKey:   providerConsensusPubKey, // Use the provider's consensus key
+								ConsumerAddress:  addr.String(),
+								ProviderAddress:  addr.String(),
+								AssignmentHeight: 0, // Not assigned, using provider key
+								PrivateKey:       privValidatorKeyData, // The entire priv_validator_key.json content
+							}
+							
+							h.logger.Info("Using provider key for consumer deployment",
+								"validator", localValidatorName,
+								"consumer_id", consumerID,
+								"pubkey", providerConsensusPubKey)
 						}
 					}
-					// consumerKey remains nil to use provider key
 				}
 
 				// Deploy with dynamic peer discovery from provider chain

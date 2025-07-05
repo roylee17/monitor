@@ -34,7 +34,7 @@ VALIDATOR_COUNT := 3
 .PHONY: generate-testnet create-clusters delete-clusters deploy reset deploy-dev reset-dev register-endpoints
 .PHONY: status status-verbose logs shell
 .PHONY: create-consumer list-consumers show-consumer remove-consumer
-.PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs
+.PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs verify-gaps
 
 # ============================================
 # Help
