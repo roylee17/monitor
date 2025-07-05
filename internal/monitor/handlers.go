@@ -1668,69 +1668,16 @@ func (h *ConsumerHandler) updateCCVPatchWithAssignedKeys(ccvPatch map[string]int
 }
 
 // isLocalValidatorInInitialSet checks if the local validator is in the CCV genesis initial validator set
+// According to the design, the initial validator set ALWAYS contains provider consensus keys
 func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (bool, error) {
 	if h.validatorSelector == nil {
 		return false, fmt.Errorf("validator selector not available")
 	}
 	
-	localValidatorName := h.validatorSelector.GetFromKey()
-	if localValidatorName == "" {
-		return false, fmt.Errorf("local validator name not available")
-	}
-	
-	// Get all possible keys for our validator (both provider and consumer keys)
-	var ourKeys []string
-	
-	// 1. Get our provider consensus public key
-	stakingClient := stakingtypes.NewQueryClient(h.clientCtx)
-	validatorsResp, err := stakingClient.Validators(context.Background(), &stakingtypes.QueryValidatorsRequest{
-		Status: "BOND_STATUS_BONDED",
-		Pagination: &query.PageRequest{
-			Limit: 1000,
-		},
-	})
+	// Get our local validator's provider consensus key
+	localProviderKey, err := h.getLocalProviderConsensusKey()
 	if err != nil {
-		return false, fmt.Errorf("failed to query validators: %w", err)
-	}
-	
-	for _, val := range validatorsResp.Validators {
-		if val.Description.Moniker == localValidatorName {
-			// Unpack the consensus pubkey
-			var pubKey cryptotypes.PubKey
-			err := h.clientCtx.InterfaceRegistry.UnpackAny(val.ConsensusPubkey, &pubKey)
-			if err != nil {
-				return false, fmt.Errorf("failed to unpack consensus pubkey: %w", err)
-			}
-			
-			// Add provider key to our list
-			providerKey := base64.StdEncoding.EncodeToString(pubKey.Bytes())
-			ourKeys = append(ourKeys, providerKey)
-			h.logger.Debug("Our provider consensus key", 
-				"validator", localValidatorName,
-				"provider_key", providerKey)
-			break
-		}
-	}
-	
-	// 2. Check if we have an assigned consumer key
-	if h.consumerKeyStore != nil {
-		keyInfo, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
-		if err == nil && keyInfo != nil && keyInfo.ConsumerPubKey != "" {
-			// Extract the base64 key from the consumer pubkey JSON
-			var pubKeyData map[string]interface{}
-			if err := json.Unmarshal([]byte(keyInfo.ConsumerPubKey), &pubKeyData); err == nil {
-				if consumerKey, ok := pubKeyData["key"].(string); ok {
-					ourKeys = append(ourKeys, consumerKey)
-					h.logger.Debug("Our assigned consumer key",
-						"validator", localValidatorName,
-						"consumer_key", consumerKey)
-				}
-			}
-		}
-	}
-	
-	if len(ourKeys) == 0 {
-		return false, fmt.Errorf("could not find any keys for local validator %s", localValidatorName)
+		return false, fmt.Errorf("failed to get local provider consensus key: %w", err)
 	}
 	
 	// Navigate to the initial validator set in the CCV patch
@@ -1757,11 +1704,10 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	}
 	
 	h.logger.Info("Checking if local validator is in initial validator set",
-		"local_validator", localValidatorName,
-		"our_keys", ourKeys,
+		"provider_consensus_key", localProviderKey,
 		"initial_set_size", len(initialValSet))
 	
-	// Check if any of our keys are in the initial set
+	// Check if our provider key is in the initial set
 	for _, val := range initialValSet {
 		validator, ok := val.(map[string]interface{})
 		if !ok {
@@ -1778,23 +1724,47 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 			continue
 		}
 		
-		// Check against all our possible keys
-		for _, ourKey := range ourKeys {
-			if ed25519Key == ourKey {
-				h.logger.Info("Found local validator in initial validator set",
-					"validator", localValidatorName,
-					"matching_key", ourKey)
-				return true, nil
-			}
+		// Compare with our provider consensus key
+		if ed25519Key == localProviderKey {
+			h.logger.Info("Found local validator in initial validator set",
+				"matching_key", localProviderKey)
+			return true, nil
 		}
 	}
 	
 	h.logger.Info("Local validator NOT found in initial validator set",
-		"validator", localValidatorName,
-		"our_keys", ourKeys,
+		"provider_key", localProviderKey,
 		"initial_set_validators", len(initialValSet))
 	
 	return false, nil
+}
+
+// getLocalProviderConsensusKey returns the base64-encoded consensus public key of the local validator
+func (h *ConsumerHandler) getLocalProviderConsensusKey() (string, error) {
+	// Get validator address from the selector
+	validatorAddr := h.validatorSelector.GetValidatorAddress()
+	if validatorAddr == "" {
+		return "", fmt.Errorf("local validator address not available")
+	}
+	
+	// Query validator info
+	stakingClient := stakingtypes.NewQueryClient(h.clientCtx)
+	resp, err := stakingClient.Validator(context.Background(), &stakingtypes.QueryValidatorRequest{
+		ValidatorAddr: validatorAddr,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to query validator %s: %w", validatorAddr, err)
+	}
+	
+	// Unpack the consensus pubkey
+	var pubKey cryptotypes.PubKey
+	err = h.clientCtx.InterfaceRegistry.UnpackAny(resp.Validator.ConsensusPubkey, &pubKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to unpack consensus pubkey: %w", err)
+	}
+	
+	// Return base64-encoded key
+	return base64.StdEncoding.EncodeToString(pubKey.Bytes()), nil
 }
 
 // getValidatorNameFromAddress maps a validator address to its moniker/name.
