@@ -54,6 +54,7 @@ type ConsumerHandler struct {
 	validatorMappingMutex  sync.RWMutex             // Protects validator mappings
 	blockchainState        *BlockchainStateProvider // Blockchain-based state provider
 	consumerKeyStore       *ConsumerKeyStore        // Manages consumer key assignments
+	consumerRegistry       *ConsumerRegistry        // Tracks validator-consumer mappings
 
 	// Context storage for consumer chain information
 	consumerContexts map[string]ConsumerContext // map[chainID]ConsumerContext
@@ -126,6 +127,11 @@ func NewConsumerHandlerWithK8s(logger *slog.Logger, validatorSelector *selector.
 	}
 
 	return handler
+}
+
+// SetConsumerRegistry sets the consumer registry for tracking deployments
+func (h *ConsumerHandler) SetConsumerRegistry(registry *ConsumerRegistry) {
+	h.consumerRegistry = registry
 }
 
 // CanHandle checks if this handler can process the event
@@ -1113,6 +1119,17 @@ func (h *ConsumerHandler) handleLaunchedPhase(ctx context.Context, consumerID, c
 		return err
 	}
 
+	// Register the consumer chain deployment with the consumer registry
+	if h.consumerRegistry != nil && h.validatorSelector != nil {
+		localValidatorName := h.validatorSelector.GetFromKey()
+		if localValidatorName != "" {
+			h.consumerRegistry.RegisterConsumer(chainID, localValidatorName)
+			h.logger.Info("Registered consumer chain with registry",
+				"chain_id", chainID,
+				"validator", localValidatorName)
+		}
+	}
+
 	// Start health monitoring
 	go h.healthMonitor.StartMonitoring(chainID)
 
@@ -1443,11 +1460,6 @@ func (h *ConsumerHandler) getValidatorNameFromAddress(address string) string {
 	return name
 }
 
-// ConsumerRegistry provides access to consumer chain information
-type ConsumerRegistry interface {
-	GetActiveConsumers(ctx context.Context) ([]ConsumerInfo, error)
-	GetOptedInValidators(ctx context.Context, consumerID string) ([]string, error)
-}
 
 // OBSOLETE: queryValidatorConsensusPairs was used by the obsolete updateCCVPatchWithAssignedKeys function.
 // It's no longer needed because the CCV patch already contains the correct keys from the provider chain.

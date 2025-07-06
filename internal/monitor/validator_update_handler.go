@@ -16,9 +16,9 @@ type ValidatorUpdateHandler struct {
 	peerDiscovery     *subnet.PeerDiscovery
 	validatorRegistry *ValidatorRegistry
 	stakingClient     stakingtypes.QueryClient
-	// TODO: Add these fields when implementing automatic consumer chain updates
-	// consumerRegistry  ConsumerRegistry // Interface to get active consumers
-	// k8sManager        K8sManagerInterface // Interface to update deployments
+	consumerRegistry  *ConsumerRegistry
+	chainUpdater      *ConsumerChainUpdater
+	autoUpdate        bool // Feature flag to enable/disable automatic updates
 }
 
 // NewValidatorUpdateHandler creates a new validator update event handler
@@ -28,6 +28,27 @@ func NewValidatorUpdateHandler(logger *slog.Logger, peerDiscovery *subnet.PeerDi
 		peerDiscovery:     peerDiscovery,
 		validatorRegistry: validatorRegistry,
 		stakingClient:     stakingClient,
+		autoUpdate:        false, // Disabled by default for safety
+	}
+}
+
+// SetConsumerRegistry sets the consumer registry for tracking validator-consumer mappings
+func (h *ValidatorUpdateHandler) SetConsumerRegistry(registry *ConsumerRegistry) {
+	h.consumerRegistry = registry
+}
+
+// SetChainUpdater sets the consumer chain updater for automatic updates
+func (h *ValidatorUpdateHandler) SetChainUpdater(updater *ConsumerChainUpdater) {
+	h.chainUpdater = updater
+}
+
+// EnableAutoUpdate enables automatic consumer chain updates
+func (h *ValidatorUpdateHandler) EnableAutoUpdate(enabled bool) {
+	h.autoUpdate = enabled
+	if enabled {
+		h.logger.Info("Automatic consumer chain updates ENABLED")
+	} else {
+		h.logger.Info("Automatic consumer chain updates DISABLED")
 	}
 }
 
@@ -95,18 +116,40 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 				"changes", len(changes),
 				"details", changes)
 				
-			// TODO: Implement automatic consumer chain updates
-			// This would require:
-			// 1. Finding all active consumer chains
-			// 2. Checking which validators are opted in to each chain
-			// 3. For chains where an updated validator is opted in:
-			//    - Update the peer list in the ConfigMap
-			//    - Trigger a rolling restart of the consumer chain pods
-			// 
-			// For now, log a warning that manual intervention may be needed
-			h.logger.Warn("Validator endpoint changes detected - consumer chains may need manual update",
-				"affected_validators", len(changes),
-				"note", "Consumer chains using these validators may need their peer configurations updated")
+			// Check if automatic updates are enabled
+			if h.autoUpdate && h.consumerRegistry != nil && h.chainUpdater != nil {
+				h.logger.Info("Triggering automatic consumer chain updates")
+				
+				// Build list of updated validators
+				var updatedValidators []UpdatedValidator
+				for moniker, newAddr := range monikerEndpoints {
+					if oldAddr, exists := currentEndpoints[moniker]; exists && oldAddr != newAddr {
+						updatedValidators = append(updatedValidators, UpdatedValidator{
+							Name:        moniker,
+							OldEndpoint: oldAddr,
+							NewEndpoint: newAddr,
+						})
+					}
+				}
+				
+				// Trigger updates in background to avoid blocking event processing
+				go func() {
+					if err := h.chainUpdater.UpdateConsumerChainsForValidators(ctx, updatedValidators); err != nil {
+						h.logger.Error("Failed to update consumer chains",
+							"error", err)
+					} else {
+						h.logger.Info("Successfully updated consumer chains for validator endpoint changes")
+					}
+				}()
+			} else {
+				// Log warning for manual intervention
+				h.logger.Warn("Validator endpoint changes detected - consumer chains may need manual update",
+					"affected_validators", len(changes),
+					"auto_update_enabled", h.autoUpdate,
+					"has_consumer_registry", h.consumerRegistry != nil,
+					"has_chain_updater", h.chainUpdater != nil,
+					"note", "Consumer chains using these validators may need their peer configurations updated")
+			}
 		} else {
 			h.logger.Debug("No changes in validator endpoints after edit_validator event")
 		}
