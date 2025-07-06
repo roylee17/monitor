@@ -43,6 +43,10 @@ type Config struct {
 	
 	// Provider endpoints for peer discovery
 	ProviderEndpoints    []string // List of provider P2P endpoints
+	
+	// Consumer chain management
+	AutoUpdateConsumers  bool   // Enable automatic consumer chain updates on validator endpoint changes
+	HybridPeerUpdates    bool   // Enable hybrid RPC+restart peer updates
 }
 
 // Validate validates the configuration
@@ -86,6 +90,9 @@ func DefaultConfig() Config {
 		// Kubernetes deployment settings
 		ConsumerNamespace: viper.GetString("consumer-namespace"),
 		ConsumerImage:     viper.GetString("consumer-image"),
+		// Consumer chain management
+		AutoUpdateConsumers: viper.GetBool("auto-update-consumers"),
+		HybridPeerUpdates:   viper.GetBool("hybrid-peer-updates"),
 	}
 }
 

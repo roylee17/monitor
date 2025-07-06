@@ -59,6 +59,36 @@ func (d *PeerDiscovery) GetNodeKeyJSON(chainID string) ([]byte, error) {
 	return d.nodeKeyGen.GenerateNodeKeyJSON(d.localValidatorMoniker, chainID)
 }
 
+// GetPeersForConsumerChain returns the persistent peers for a consumer chain at the given port
+// This is used by the consumer chain updater when updating peer configurations
+func (d *PeerDiscovery) GetPeersForConsumerChain(chainID string, port int) ([]string, error) {
+	// Get all validators from endpoints (we don't know which ones are opted in)
+	// In a real implementation, we would query the provider chain for opted-in validators
+	var peers []string
+	
+	for validatorName, endpoint := range d.validatorEndpoints {
+		// Skip self
+		if validatorName == d.localValidatorMoniker {
+			continue
+		}
+		
+		// Calculate deterministic node ID
+		nodeID, err := d.nodeKeyGen.GetNodeID(validatorName, chainID)
+		if err != nil {
+			d.logger.Warn("Failed to calculate node ID",
+				"validator", validatorName,
+				"error", err)
+			continue
+		}
+		
+		// Build peer address
+		peer := fmt.Sprintf("%s@%s:%d", nodeID, endpoint, port)
+		peers = append(peers, peer)
+	}
+	
+	return peers, nil
+}
+
 
 
 // discoverPeersWithLoadBalancer discovers peers for a consumer chain using LoadBalancer addresses

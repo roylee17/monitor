@@ -140,14 +140,45 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	}
 	consumerKeyStore := NewConsumerKeyStore(logger, clientset, "provider")
 
+	// Create consumer registry for tracking validator-consumer mappings
+	consumerRegistry := NewConsumerRegistry(logger, clientset)
+	
+	// Refresh consumer registry from existing Kubernetes namespaces
+	if err := consumerRegistry.RefreshFromKubernetes(context.Background()); err != nil {
+		logger.Warn("Failed to refresh consumer registry from Kubernetes", "error", err)
+	}
+
+	// Create consumer chain updater for automatic updates
+	chainUpdater := NewConsumerChainUpdater(logger, clientset, consumerRegistry, peerDiscovery, k8sManager)
+	
+	// Enable hybrid updates if requested
+	if cfg.HybridPeerUpdates || os.Getenv("HYBRID_PEER_UPDATES") == "true" {
+		chainUpdater.EnableHybridUpdate(true)
+		logger.Info("Hybrid peer updates are ENABLED (RPC first, restart fallback)")
+	}
+
 	// Create event processor with K8s-enabled handlers
 	consumerHandler := NewConsumerHandlerWithK8s(logger, validatorSelector, subnetManager, k8sManager, txService, rpcClient, clientCtx, cfg.ProviderEndpoints)
+	consumerHandler.SetConsumerRegistry(consumerRegistry)
 	logger.Info("Using Kubernetes-enabled consumer handler", "provider_endpoints", len(cfg.ProviderEndpoints))
+
+	// Create validator update handler with automatic update capability
+	validatorUpdateHandler := NewValidatorUpdateHandler(logger, peerDiscovery, validatorRegistry, stakingQueryClient)
+	validatorUpdateHandler.SetConsumerRegistry(consumerRegistry)
+	validatorUpdateHandler.SetChainUpdater(chainUpdater)
+	
+	// Check if automatic updates are enabled via config or environment
+	if cfg.AutoUpdateConsumers || os.Getenv("AUTO_UPDATE_CONSUMERS") == "true" {
+		validatorUpdateHandler.EnableAutoUpdate(true)
+		logger.Info("Automatic consumer chain updates are ENABLED")
+	} else {
+		logger.Info("Automatic consumer chain updates are DISABLED (set AUTO_UPDATE_CONSUMERS=true to enable)")
+	}
 
 	handlers := []EventHandler{
 		NewCCVHandler(logger, txService, consumerKeyStore, validatorSelector),
 		consumerHandler,
-		NewValidatorUpdateHandler(logger, peerDiscovery, validatorRegistry, stakingQueryClient),
+		validatorUpdateHandler,
 	}
 
 	processor := NewEventProcessor(handlers)
