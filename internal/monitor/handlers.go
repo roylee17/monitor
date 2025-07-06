@@ -3,7 +3,6 @@ package monitor
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,7 +13,6 @@ import (
 
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
-	cosmosed25519 "github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/query"
@@ -24,252 +22,6 @@ import (
 	"github.com/cosmos/interchain-security-monitor/internal/transaction"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// CCVHandler handles CCV module events
-type CCVHandler struct {
-	logger            *slog.Logger
-	txService         transaction.Service
-	consumerKeyStore  *ConsumerKeyStore
-	validatorSelector *selector.ValidatorSelector
-}
-
-// NewCCVHandler creates a new CCV event handler
-func NewCCVHandler(logger *slog.Logger, txService transaction.Service, consumerKeyStore *ConsumerKeyStore, validatorSelector *selector.ValidatorSelector) *CCVHandler {
-	return &CCVHandler{
-		logger:            logger,
-		txService:         txService,
-		consumerKeyStore:  consumerKeyStore,
-		validatorSelector: validatorSelector,
-	}
-}
-
-// CanHandle checks if this handler can process the event
-func (h *CCVHandler) CanHandle(event Event) bool {
-	// Handle opt_in events directly
-	if event.Type == "opt_in" {
-		return true
-	}
-	// Handle message events with CCV actions
-	return strings.Contains(event.Type, "message") && h.containsCCVAction(event.Attributes)
-}
-
-// HandleEvent processes CCV module events
-func (h *CCVHandler) HandleEvent(ctx context.Context, event Event) error {
-	// Handle opt_in event type directly
-	if event.Type == "opt_in" {
-		h.logger.Info("Opt-in event detected",
-			"height", event.Height,
-			"consumer_id", event.Attributes["consumer_id"],
-			"validator", event.Attributes["provider_validator_address"])
-		return h.handleOptInEvent(ctx, event)
-	}
-
-	// Handle message events
-	action := event.Attributes["action"]
-	h.logger.Info("CCV Action detected", "action", action, "height", event.Height)
-
-	switch {
-	case strings.Contains(action, "MsgCreateConsumer"):
-		h.logger.Info("Consumer chain creation detected")
-	case strings.Contains(action, "MsgOptIn"):
-		h.logger.Info("Validator opt-in detected")
-		// The actual opt-in handling is done via the opt_in event above
-	case strings.Contains(action, "MsgAssignConsumerKey"):
-		h.logger.Info("Consensus key assignment detected")
-	}
-
-	return nil
-}
-
-// handleOptInEvent processes opt_in events with full consumer information
-func (h *CCVHandler) handleOptInEvent(ctx context.Context, event Event) error {
-	// Extract all relevant information from the opt_in event
-	consumerID := event.Attributes["consumer_id"]
-	consumerChainID := event.Attributes["consumer_chain_id"]
-	providerValidatorAddr := event.Attributes["provider_validator_address"]
-	submitterAddr := event.Attributes["submitter_address"]
-	consumerPubKey := event.Attributes["consumer_consensus_pub_key"]
-
-	h.logger.Info("Processing opt-in event",
-		"consumer_id", consumerID,
-		"chain_id", consumerChainID,
-		"provider_validator", providerValidatorAddr,
-		"submitter", submitterAddr,
-		"has_consumer_key", consumerPubKey != "")
-
-	// Check if this is our validator
-	if h.validatorSelector == nil {
-		h.logger.Warn("Validator selector not available, skipping key assignment")
-		return nil
-	}
-
-	localValidatorAddr := h.validatorSelector.GetAccountAddress()
-	if localValidatorAddr == "" {
-		h.logger.Warn("Local validator address not available")
-		return nil
-	}
-
-	h.logger.Info("Checking if opt-in is for our validator",
-		"submitter", submitterAddr,
-		"local_validator", localValidatorAddr,
-		"provider_validator", providerValidatorAddr)
-
-	// Compare the submitter address with our validator address
-	if submitterAddr != localValidatorAddr {
-		h.logger.Debug("Opt-in event for different validator, ignoring",
-			"event_validator", submitterAddr,
-			"local_validator", localValidatorAddr)
-		return nil
-	}
-
-	// If a consumer key was already provided in the opt-in, no need to assign a new one
-	if consumerPubKey != "" {
-		h.logger.Info("Consumer key already provided in opt-in transaction",
-			"consumer_id", consumerID,
-			"pubkey", consumerPubKey)
-		return nil
-	}
-
-	h.logger.Info("Our validator opted in without consumer key, triggering assignment",
-		"validator", submitterAddr,
-		"consumer_id", consumerID)
-
-	// Check if we already have a consumer key assigned
-	localValidatorMoniker := h.validatorSelector.GetFromKey()
-	if h.consumerKeyStore != nil {
-		existingKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorMoniker)
-		if err == nil && existingKey != nil {
-			h.logger.Info("Consumer key already assigned",
-				"validator", submitterAddr,
-				"consumer_id", consumerID,
-				"pubkey", existingKey.ConsumerPubKey)
-			return nil
-		}
-	}
-
-	// Generate a new consumer key
-	privKey := cosmosed25519.GenPrivKey()
-	pubKey := privKey.PubKey()
-
-	h.logger.Info("Generated new consumer key",
-		"validator", submitterAddr,
-		"consumer_id", consumerID,
-		"pubkey", pubKey.String())
-
-	// Create the priv_validator_key.json structure
-	privKeyBytes := privKey.Bytes()
-	pubKeyBytes := pubKey.Bytes()
-	
-	// Calculate the consensus address (first 20 bytes of SHA256 of pubkey)
-	address := sdk.ConsAddress(pubKey.Address())
-	
-	privValidatorKey := map[string]interface{}{
-		"address": strings.ToUpper(hex.EncodeToString(address)),
-		"pub_key": map[string]interface{}{
-			"type":  "tendermint/PubKeyEd25519",
-			"value": base64.StdEncoding.EncodeToString(pubKeyBytes),
-		},
-		"priv_key": map[string]interface{}{
-			"type":  "tendermint/PrivKeyEd25519",
-			"value": base64.StdEncoding.EncodeToString(privKeyBytes),
-		},
-	}
-	
-	privValidatorKeyJSON, err := json.Marshal(privValidatorKey)
-	if err != nil {
-		return fmt.Errorf("failed to marshal priv_validator_key: %w", err)
-	}
-
-	// Store the key (will be stored in ConfigMap after successful assignment)
-	keyInfo := &subnet.ConsumerKeyInfo{
-		ValidatorName:        localValidatorMoniker,
-		ConsumerID:           consumerID,
-		ConsumerPubKey:       pubKey.String(),
-		ConsumerAddress:      "", // Will be set later
-		ProviderAddress:      submitterAddr,
-		AssignmentHeight:     event.Height,
-		PrivValidatorKeyJSON: string(privValidatorKeyJSON),
-	}
-
-	// Submit the consumer key assignment transaction
-	if h.txService != nil {
-		// Build the assign consumer key command
-		// The CLI expects JSON format: {"@type": "/cosmos.crypto.ed25519.PubKey", "key": "<base64>"}
-		pubKeyBase64 := base64.StdEncoding.EncodeToString(pubKey.Bytes())
-		pubKeyJSON := fmt.Sprintf(`{"@type":"/cosmos.crypto.ed25519.PubKey","key":"%s"}`, pubKeyBase64)
-		cmd := []string{
-			"tx", "provider", "assign-consensus-key",
-			consumerID,
-			pubKeyJSON,
-			"--from", h.validatorSelector.GetFromKey(),
-			"--yes",
-			"--gas", "auto",
-			"--gas-adjustment", "1.5",
-		}
-
-		h.logger.Info("Submitting consumer key assignment transaction",
-			"validator", submitterAddr,
-			"consumer_id", consumerID,
-			"pubkey", pubKey.String(),
-			"pubkey_json", pubKeyJSON)
-
-		// Type assert to get the concrete TxService
-		txService, ok := h.txService.(*transaction.TxService)
-		if !ok {
-			h.logger.Error("Transaction service does not support ExecuteTx")
-			return fmt.Errorf("transaction service does not support ExecuteTx")
-		}
-
-		result, err := txService.ExecuteTx(ctx, cmd)
-		if err != nil {
-			h.logger.Error("Failed to assign consumer key",
-				"error", err,
-				"validator", submitterAddr,
-				"consumer_id", consumerID)
-			return fmt.Errorf("failed to assign consumer key: %w", err)
-		}
-
-		h.logger.Info("Consumer key assignment transaction submitted",
-			"tx_hash", result.TxHash,
-			"validator", submitterAddr,
-			"consumer_id", consumerID)
-
-		// Store the key in ConfigMap after successful tx
-		if h.consumerKeyStore != nil {
-			if err := h.consumerKeyStore.StoreConsumerKey(ctx, keyInfo); err != nil {
-				h.logger.Error("Failed to store consumer key after assignment", "error", err)
-			}
-		}
-	}
-
-	return nil
-}
-
-
-// containsCCVAction checks if the message contains CCV-related actions
-func (h *CCVHandler) containsCCVAction(attributes map[string]string) bool {
-	action, exists := attributes["action"]
-	if !exists {
-		return false
-	}
-
-	ccvActions := []string{
-		"MsgCreateConsumer",
-		"MsgOptIn",
-		"MsgAssignConsumerKey",
-		"/interchain_security.ccv.provider.v1.MsgCreateConsumer",
-		"/interchain_security.ccv.provider.v1.MsgOptIn",
-		"/interchain_security.ccv.provider.v1.MsgAssignConsumerKey",
-	}
-
-	for _, ccvAction := range ccvActions {
-		if strings.Contains(action, ccvAction) {
-			return true
-		}
-	}
-	return false
-}
-
 
 // ConsumerHandler handles consumer chain lifecycle management
 //
@@ -311,19 +63,6 @@ type ConsumerHandler struct {
 	spawnMonitors   map[string]context.CancelFunc // map[chainID]cancelFunc
 	spawnMonitorsMu sync.Mutex                    // Protects spawnMonitors
 }
-
-// ConsumerContext stores context information for a consumer chain
-type ConsumerContext struct {
-	ChainID                  string
-	ConsumerID               string
-	ClientID                 string
-	CreatedAt                int64                  // Block height when created
-	CCVPatch                 map[string]interface{} // CCV genesis patch data
-	SpawnTime                time.Time              // When the consumer chain should spawn
-	ValidatorSet             []string               // Validators participating in this consumer
-	IsLocalValidatorSelected bool                   // Whether the local validator was selected for this consumer
-}
-
 
 // NewConsumerHandlerWithK8s creates a new consumer event handler with Kubernetes deployment support
 func NewConsumerHandlerWithK8s(logger *slog.Logger, validatorSelector *selector.ValidatorSelector, subnetManager *subnet.Manager, k8sManager *subnet.K8sManager, txService transaction.Service, rpcClient *rpcclient.HTTP, clientCtx client.Context, providerEndpoints []string) *ConsumerHandler {
@@ -1658,27 +1397,63 @@ func (h *ConsumerHandler) handleConsensusKeyAssignment(ctx context.Context, even
 
 // Removed: updateCCVPatchWithAssignedKeys function (obsolete)
 
-// ValidatorKeyType indicates which type of key was found in the initial validator set
-type ValidatorKeyType string
 
-const (
-	KeyTypeProvider ValidatorKeyType = "provider"
-	KeyTypeConsumer ValidatorKeyType = "consumer"
-)
 
-// ValidatorKeyInfo contains information about the key found in initial validator set
-type InitialSetKeyInfo struct {
-	Found    bool
-	KeyType  ValidatorKeyType
-	KeyValue string // Base64 encoded public key
+// getValidatorNameFromAddress maps a validator address to its moniker/name.
+//
+// This function is essential for correlating validator addresses in events
+// with validator names used in deployment and key storage.
+//
+// Behavior:
+// 1. First checks the cached mapping (validatorAddressToName)
+// 2. If not found, refreshes the mapping from the blockchain
+// 3. Returns the validator name or empty string if not found
+//
+// Parameters:
+//   - address: The validator's provider chain address (e.g., "cosmosvaloperXXX")
+//
+// Returns:
+//   - The validator's moniker/name (e.g., "alice", "bob", "charlie")
+//   - Empty string if validator not found
+//
+// Thread Safety:
+//   - Uses RWMutex for concurrent access to validator mappings
+//   - Safe to call from multiple goroutines
+//
+// Note: The mapping is populated by refreshValidatorMappings() which
+// queries the staking module for all bonded validators.
+func (h *ConsumerHandler) getValidatorNameFromAddress(address string) string {
+	h.validatorMappingMutex.RLock()
+	if name, exists := h.validatorAddressToName[address]; exists {
+		h.validatorMappingMutex.RUnlock()
+		return name
+	}
+	h.validatorMappingMutex.RUnlock()
+
+	// If not found in cache, try to refresh the mapping
+	if err := h.refreshValidatorMappings(context.Background()); err != nil {
+		h.logger.Warn("Failed to refresh validator mappings", "error", err)
+	}
+
+	// Try again after refresh
+	h.validatorMappingMutex.RLock()
+	name := h.validatorAddressToName[address]
+	h.validatorMappingMutex.RUnlock()
+
+	return name
 }
 
-// isLocalValidatorInInitialSet checks if the local validator is in the CCV genesis initial validator set
-// IMPORTANT: The initial validator set contains:
-// - CONSUMER consensus keys for validators who assigned consumer keys
-// - PROVIDER consensus keys for validators who did NOT assign consumer keys
-//
-// Returns: InitialSetKeyInfo with details about which key was found
+// ConsumerRegistry provides access to consumer chain information
+type ConsumerRegistry interface {
+	GetActiveConsumers(ctx context.Context) ([]ConsumerInfo, error)
+	GetOptedInValidators(ctx context.Context, consumerID string) ([]string, error)
+}
+
+// OBSOLETE: queryValidatorConsensusPairs was used by the obsolete updateCCVPatchWithAssignedKeys function.
+// It's no longer needed because the CCV patch already contains the correct keys from the provider chain.
+
+
+
 func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (*InitialSetKeyInfo, error) {
 	if h.validatorSelector == nil {
 		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("validator selector not available")
@@ -1758,7 +1533,7 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	
 	// Check if we have a stored consumer key assignment
 	if h.consumerKeyStore != nil {
-		consumerKey, err := h.consumerKeyStore.GetConsumerKey(localValidatorName, consumerID)
+		consumerKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
 		if err == nil && consumerKey != nil {
 			// Extract the public key from the consumer key info
 			consumerPubKey := extractPubKeyFromConsensusKey(consumerKey.ConsumerPubKey)
@@ -1804,7 +1579,6 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	return &InitialSetKeyInfo{Found: false}, nil
 }
 
-// getLocalProviderConsensusKey returns the base64-encoded consensus public key of the local validator
 func (h *ConsumerHandler) getLocalProviderConsensusKey() (string, error) {
 	// Get validator address from the selector
 	validatorAddr := h.validatorSelector.GetValidatorAddress()
@@ -1832,210 +1606,6 @@ func (h *ConsumerHandler) getLocalProviderConsensusKey() (string, error) {
 	return base64.StdEncoding.EncodeToString(pubKey.Bytes()), nil
 }
 
-// getValidatorNameFromAddress maps a validator address to its moniker/name.
-//
-// This function is essential for correlating validator addresses in events
-// with validator names used in deployment and key storage.
-//
-// Behavior:
-// 1. First checks the cached mapping (validatorAddressToName)
-// 2. If not found, refreshes the mapping from the blockchain
-// 3. Returns the validator name or empty string if not found
-//
-// Parameters:
-//   - address: The validator's provider chain address (e.g., "cosmosvaloperXXX")
-//
-// Returns:
-//   - The validator's moniker/name (e.g., "alice", "bob", "charlie")
-//   - Empty string if validator not found
-//
-// Thread Safety:
-//   - Uses RWMutex for concurrent access to validator mappings
-//   - Safe to call from multiple goroutines
-//
-// Note: The mapping is populated by refreshValidatorMappings() which
-// queries the staking module for all bonded validators.
-func (h *ConsumerHandler) getValidatorNameFromAddress(address string) string {
-	h.validatorMappingMutex.RLock()
-	if name, exists := h.validatorAddressToName[address]; exists {
-		h.validatorMappingMutex.RUnlock()
-		return name
-	}
-	h.validatorMappingMutex.RUnlock()
-
-	// If not found in cache, try to refresh the mapping
-	if err := h.refreshValidatorMappings(context.Background()); err != nil {
-		h.logger.Warn("Failed to refresh validator mappings", "error", err)
-	}
-
-	// Try again after refresh
-	h.validatorMappingMutex.RLock()
-	name := h.validatorAddressToName[address]
-	h.validatorMappingMutex.RUnlock()
-
-	return name
-}
-
-// ConsumerRegistry provides access to consumer chain information
-type ConsumerRegistry interface {
-	GetActiveConsumers(ctx context.Context) ([]ConsumerInfo, error)
-	GetOptedInValidators(ctx context.Context, consumerID string) ([]string, error)
-}
-
-// ValidatorUpdateHandler handles validator update events including P2P endpoint changes
-type ValidatorUpdateHandler struct {
-	logger            *slog.Logger
-	peerDiscovery     *subnet.PeerDiscovery
-	validatorRegistry *ValidatorRegistry
-	stakingClient     stakingtypes.QueryClient
-	// TODO: Add these fields when implementing automatic consumer chain updates
-	// consumerRegistry  ConsumerRegistry // Interface to get active consumers
-	// k8sManager        K8sManagerInterface // Interface to update deployments
-}
-
-// NewValidatorUpdateHandler creates a new validator update event handler
-func NewValidatorUpdateHandler(logger *slog.Logger, peerDiscovery *subnet.PeerDiscovery, validatorRegistry *ValidatorRegistry, stakingClient stakingtypes.QueryClient) *ValidatorUpdateHandler {
-	return &ValidatorUpdateHandler{
-		logger:            logger,
-		peerDiscovery:     peerDiscovery,
-		validatorRegistry: validatorRegistry,
-		stakingClient:     stakingClient,
-	}
-}
-
-// CanHandle checks if this handler can process the event
-func (h *ValidatorUpdateHandler) CanHandle(event Event) bool {
-	// Handle edit_validator events
-	if strings.Contains(event.Type, "edit_validator") {
-		return true
-	}
-	// Handle message events with validator edit actions
-	if event.Type == "message" {
-		action := event.Attributes["action"]
-		return strings.Contains(action, "MsgEditValidator") || strings.Contains(action, "edit_validator")
-	}
-	return false
-}
-
-// HandleEvent processes validator update events
-func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) error {
-	h.logger.Info("Validator update event detected",
-		"type", event.Type,
-		"height", event.Height,
-		"attributes", event.Attributes)
-
-	// Refresh validator endpoints from chain
-	if h.validatorRegistry != nil && h.stakingClient != nil {
-		endpoints, err := h.validatorRegistry.GetValidatorEndpoints(ctx, h.stakingClient)
-		if err != nil {
-			h.logger.Warn("Failed to refresh validator endpoints after update", "error", err)
-			return nil // Don't fail the event processing
-		}
-
-		// Convert to simple moniker->address map for peer discovery
-		monikerEndpoints := make(map[string]string)
-		var changes []string
-		
-		// Get current endpoints for comparison
-		currentEndpoints := h.peerDiscovery.GetValidatorEndpoints()
-		
-		for moniker, endpoint := range endpoints {
-			newAddr := endpoint.Address
-			monikerEndpoints[moniker] = newAddr
-			
-			// Check if this is a new or updated endpoint
-			if oldAddr, exists := currentEndpoints[moniker]; !exists {
-				changes = append(changes, fmt.Sprintf("%s: new endpoint %s", moniker, newAddr))
-			} else if oldAddr != newAddr {
-				changes = append(changes, fmt.Sprintf("%s: %s -> %s", moniker, oldAddr, newAddr))
-			}
-		}
-		
-		// Check for removed endpoints
-		for moniker := range currentEndpoints {
-			if _, exists := monikerEndpoints[moniker]; !exists {
-				changes = append(changes, fmt.Sprintf("%s: endpoint removed", moniker))
-			}
-		}
-		
-		// Update peer discovery with new endpoints
-		h.peerDiscovery.SetValidatorEndpoints(monikerEndpoints)
-		
-		if len(changes) > 0 {
-			h.logger.Info("Validator endpoints updated after edit_validator event",
-				"total_endpoints", len(monikerEndpoints),
-				"changes", len(changes),
-				"details", changes)
-				
-			// TODO: Implement automatic consumer chain updates
-			// This would require:
-			// 1. Finding all active consumer chains
-			// 2. Checking which validators are opted in to each chain
-			// 3. For chains where an updated validator is opted in:
-			//    - Update the peer list in the ConfigMap
-			//    - Trigger a rolling restart of the consumer chain pods
-			// 
-			// For now, log a warning that manual intervention may be needed
-			h.logger.Warn("Validator endpoint changes detected - consumer chains may need manual update",
-				"affected_validators", len(changes),
-				"note", "Consumer chains using these validators may need their peer configurations updated")
-		} else {
-			h.logger.Debug("No changes in validator endpoints after edit_validator event")
-		}
-	}
-
-	return nil
-}
-
-// OBSOLETE: queryValidatorConsensusPairs was used by the obsolete updateCCVPatchWithAssignedKeys function.
-// It's no longer needed because the CCV patch already contains the correct keys from the provider chain.
-
-// extractPubKeyFromConsensusKey extracts the base64 pubkey from consensus key string.
-//
-// This helper function handles multiple formats of consensus keys that may be
-// returned by the blockchain:
-//
-// Format 1: JSON format - {"@type":"/cosmos.crypto.ed25519.PubKey","key":"base64key"}
-// Format 2: Tendermint format - PubKeyEd25519{hexkey}
-// Format 3: Direct base64 string (less common)
-//
-// Parameters:
-//   - consensusKey: The consensus key string in any supported format
-//
-// Returns:
-//   - The base64-encoded public key, or empty string if parsing fails
-//
-// Note: This function is critical for matching validators between provider
-// and consumer chains, as key formats may vary between different sources.
-func extractPubKeyFromConsensusKey(consensusKey string) string {
-	// Handle different formats of consensus keys
-	// Format 1: {"@type":"/cosmos.crypto.ed25519.PubKey","key":"base64key"}
-	if strings.Contains(consensusKey, "@type") {
-		var keyData map[string]interface{}
-		if err := json.Unmarshal([]byte(consensusKey), &keyData); err == nil {
-			if key, ok := keyData["key"].(string); ok {
-				return key
-			}
-		}
-	}
-
-	// Format 2: PubKeyEd25519{hexkey}
-	if strings.HasPrefix(consensusKey, "PubKeyEd25519{") && strings.HasSuffix(consensusKey, "}") {
-		hexStr := consensusKey[14 : len(consensusKey)-1]
-		if pubKeyBytes, err := hex.DecodeString(hexStr); err == nil {
-			return base64.StdEncoding.EncodeToString(pubKeyBytes)
-		}
-	}
-
-	// Format 3: Direct base64 (less common)
-	if _, err := base64.StdEncoding.DecodeString(consensusKey); err == nil {
-		return consensusKey
-	}
-
-	return ""
-}
-
-// refreshValidatorMappings updates the validator address/name mappings from the chain
 func (h *ConsumerHandler) refreshValidatorMappings(ctx context.Context) error {
 	if h.validatorSelector == nil {
 		return fmt.Errorf("validator selector not available")
@@ -2063,4 +1633,3 @@ func (h *ConsumerHandler) refreshValidatorMappings(ctx context.Context) error {
 	h.logger.Info("Refreshed validator mappings", "validator_count", len(validators))
 	return nil
 }
-
