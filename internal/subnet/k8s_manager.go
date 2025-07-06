@@ -280,6 +280,8 @@ func (m *K8sManager) MonitorConsumerChainHealth(ctx context.Context, chainID str
 
 // deployConsumerFull deploys a consumer chain instance with all options including consumer key
 func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
+	// Initialize deployment error tracker
+	deployErr := NewDeploymentError(chainID, "deployment")
 	// Determine validator name from consumer key or environment
 	validatorName := ""
 	if consumerKey != nil {
@@ -414,6 +416,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		m.logger.Warn("Failed to get pod IP after retries",
 			"chain_id", chainID,
 			"error", err)
+		deployErr.AddError(fmt.Errorf("pod readiness check failed: %w", err))
 	}
 
 	if podIP == "" {
@@ -428,21 +431,21 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		// Configure LoadBalancer for this consumer chain
 		calculatedPort := ports.P2P
 		
-		// Add port to LoadBalancer
+		// Add port to LoadBalancer (critical for peer connectivity)
 		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(calculatedPort)); err != nil {
 			m.logger.Error("Failed to add port to LoadBalancer", 
 				"chain_id", chainID,
 				"port", calculatedPort,
 				"error", err)
-			// Don't fail deployment, but log the error
+			deployErr.AddCriticalError(fmt.Errorf("LoadBalancer port configuration failed: %w", err))
 		}
 		
-		// Create EndpointSlice for LoadBalancer routing (using modern API)
+		// Create EndpointSlice for LoadBalancer routing (critical for peer connectivity)
 		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(calculatedPort)); err != nil {
 			m.logger.Error("Failed to create EndpointSlice for LoadBalancer",
 				"chain_id", chainID,
 				"error", err)
-			// Don't fail deployment, but log the error
+			deployErr.AddCriticalError(fmt.Errorf("EndpointSlice creation failed: %w", err))
 		}
 		
 		m.logger.Info("LoadBalancer configured for consumer chain",
@@ -451,10 +454,22 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 			"pod_ip", podIP)
 	}
 
-	m.logger.Info("Consumer chain deployed with stateless peer discovery successfully",
-		"chain_id", chainID,
-		"validator", validatorName,
-		"peers_count", len(peers))
+	// Check deployment status and return appropriate error
+	if deployErr.HasErrors() {
+		m.logger.Warn("Consumer chain deployed with errors",
+			"chain_id", chainID,
+			"validator", validatorName,
+			"summary", deployErr.Summary())
+		// Only return error if critical
+		if deployErr.IsCritical() {
+			return deployErr
+		}
+	} else {
+		m.logger.Info("Consumer chain deployed successfully",
+			"chain_id", chainID,
+			"validator", validatorName,
+			"peers_count", len(peers))
+	}
 
 	return nil
 }
@@ -673,7 +688,7 @@ func (k *K8sManager) EnsureLoadBalancerReady(ctx context.Context) (string, error
 }
 
 // configureLoadBalancerWhenReady is a background task that waits for consumer pod to be ready
-// and then configures the LoadBalancer
+// and then configures the LoadBalancer. This is critical for peer connectivity.
 func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID, namespace string, p2pPort int) {
 	m.logger.Info("Starting background LoadBalancer configuration task",
 		"chain_id", chainID)
@@ -711,21 +726,23 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 		
 		// Configure LoadBalancer
 		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(p2pPort)); err != nil {
-			m.logger.Error("Failed to add port to LoadBalancer",
+			m.logger.Error("CRITICAL: Failed to add port to LoadBalancer",
 				"chain_id", chainID,
 				"port", p2pPort,
-				"error", err)
-			// Don't retry on LoadBalancer errors
-			return nil
+				"error", err,
+				"impact", "Consumer chain will not be able to receive peer connections")
+			// Return error to stop retrying and log critical failure
+			return fmt.Errorf("critical LoadBalancer error: %w", err)
 		}
 		
 		// Create EndpointSlice for LoadBalancer routing (using modern API)
 		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(p2pPort)); err != nil {
-			m.logger.Error("Failed to create EndpointSlice",
+			m.logger.Error("CRITICAL: Failed to create EndpointSlice",
 				"chain_id", chainID,
-				"error", err)
-			// Don't retry on EndpointSlice errors
-			return nil
+				"error", err,
+				"impact", "LoadBalancer will not route traffic to consumer chain")
+			// Return error to stop retrying and log critical failure
+			return fmt.Errorf("critical EndpointSlice error: %w", err)
 		}
 		
 		m.logger.Info("LoadBalancer configured successfully in background task",
@@ -740,9 +757,11 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 			m.logger.Info("LoadBalancer configuration cancelled",
 				"chain_id", chainID)
 		} else {
-			m.logger.Error("Failed to configure LoadBalancer after all retries",
+			m.logger.Error("CRITICAL: Failed to configure LoadBalancer after all retries",
 				"chain_id", chainID,
-				"error", err)
+				"error", err,
+				"impact", "Consumer chain deployed but CANNOT receive peer connections",
+				"action", "Manual intervention required to fix LoadBalancer configuration")
 		}
 	}
 }
