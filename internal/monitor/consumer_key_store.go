@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/cosmos/interchain-security-monitor/internal/subnet"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,18 +23,7 @@ type ConsumerKeyStore struct {
 	namespace string
 	mu        sync.RWMutex
 	// In-memory cache: consumerID -> validatorName -> keyInfo
-	cache map[string]map[string]*ConsumerKeyInfo
-}
-
-// ConsumerKeyInfo holds assigned consumer key information
-type ConsumerKeyInfo struct {
-	ValidatorName        string `json:"validator_name"`
-	ConsumerID           string `json:"consumer_id"`
-	ConsumerPubKey       string `json:"consumer_pub_key"`
-	ConsumerAddress      string `json:"consumer_address"`
-	ProviderAddress      string `json:"provider_address"`
-	AssignmentHeight     int64  `json:"assignment_height"`
-	PrivValidatorKeyJSON string `json:"-"` // Complete priv_validator_key.json content (not serialized to ConfigMap)
+	cache map[string]map[string]*subnet.ConsumerKeyInfo
 }
 
 // NewConsumerKeyStore creates a new consumer key store
@@ -42,18 +32,18 @@ func NewConsumerKeyStore(logger *slog.Logger, clientset kubernetes.Interface, na
 		logger:    logger,
 		clientset: clientset,
 		namespace: namespace,
-		cache:     make(map[string]map[string]*ConsumerKeyInfo),
+		cache:     make(map[string]map[string]*subnet.ConsumerKeyInfo),
 	}
 }
 
 // StoreConsumerKey stores an assigned consumer key
-func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *ConsumerKeyInfo) error {
+func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *subnet.ConsumerKeyInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Update in-memory cache
 	if s.cache[info.ConsumerID] == nil {
-		s.cache[info.ConsumerID] = make(map[string]*ConsumerKeyInfo)
+		s.cache[info.ConsumerID] = make(map[string]*subnet.ConsumerKeyInfo)
 	}
 	s.cache[info.ConsumerID][info.ValidatorName] = info
 
@@ -153,7 +143,7 @@ func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *ConsumerK
 }
 
 // GetConsumerKey retrieves an assigned consumer key
-func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*ConsumerKeyInfo, error) {
+func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*subnet.ConsumerKeyInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -182,7 +172,7 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*Co
 
 	// Look for validator's key
 	if keyData, ok := cm.Data[validatorName]; ok {
-		var info ConsumerKeyInfo
+		var info subnet.ConsumerKeyInfo
 		if err := json.Unmarshal([]byte(keyData), &info); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal key info: %w", err)
 		}
@@ -195,7 +185,7 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*Co
 		
 		// Update cache
 		if s.cache[consumerID] == nil {
-			s.cache[consumerID] = make(map[string]*ConsumerKeyInfo)
+			s.cache[consumerID] = make(map[string]*subnet.ConsumerKeyInfo)
 		}
 		s.cache[consumerID][validatorName] = &info
 		
@@ -206,7 +196,7 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*Co
 }
 
 // GetAllConsumerKeys returns all assigned keys for a consumer chain
-func (s *ConsumerKeyStore) GetAllConsumerKeys(consumerID string) (map[string]*ConsumerKeyInfo, error) {
+func (s *ConsumerKeyStore) GetAllConsumerKeys(consumerID string) (map[string]*subnet.ConsumerKeyInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -220,14 +210,14 @@ func (s *ConsumerKeyStore) GetAllConsumerKeys(consumerID string) (map[string]*Co
 	cm, err := s.clientset.CoreV1().ConfigMaps(s.namespace).Get(context.Background(), configMapName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return make(map[string]*ConsumerKeyInfo), nil
+			return make(map[string]*subnet.ConsumerKeyInfo), nil
 		}
 		return nil, fmt.Errorf("failed to get consumer keys: %w", err)
 	}
 
-	result := make(map[string]*ConsumerKeyInfo)
+	result := make(map[string]*subnet.ConsumerKeyInfo)
 	for validatorName, keyData := range cm.Data {
-		var info ConsumerKeyInfo
+		var info subnet.ConsumerKeyInfo
 		if err := json.Unmarshal([]byte(keyData), &info); err != nil {
 			s.logger.Warn("Failed to unmarshal key info",
 				"validator", validatorName,
@@ -263,11 +253,11 @@ func (s *ConsumerKeyStore) LoadFromConfigMaps(ctx context.Context) error {
 		}
 
 		if s.cache[consumerID] == nil {
-			s.cache[consumerID] = make(map[string]*ConsumerKeyInfo)
+			s.cache[consumerID] = make(map[string]*subnet.ConsumerKeyInfo)
 		}
 
 		for validatorName, keyData := range cm.Data {
-			var info ConsumerKeyInfo
+			var info subnet.ConsumerKeyInfo
 			if err := json.Unmarshal([]byte(keyData), &info); err != nil {
 				s.logger.Warn("Failed to unmarshal key info",
 					"consumer_id", consumerID,

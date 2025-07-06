@@ -181,7 +181,7 @@ func (h *CCVHandler) handleOptInEvent(ctx context.Context, event Event) error {
 	}
 
 	// Store the key (will be stored in ConfigMap after successful assignment)
-	keyInfo := &ConsumerKeyInfo{
+	keyInfo := &subnet.ConsumerKeyInfo{
 		ValidatorName:        localValidatorMoniker,
 		ConsumerID:           consumerID,
 		ConsumerPubKey:       pubKey.String(),
@@ -1301,7 +1301,7 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 				// No manual update is needed.
 
 				// Smart key selection: Use the key that's in the initial validator set
-				var consumerKey *ConsumerKeyInfo
+				var consumerKey *subnet.ConsumerKeyInfo
 				
 				if keyInfo.KeyType == KeyTypeConsumer {
 					// Initial set has consumer key - we MUST use the consumer key
@@ -1376,7 +1376,7 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 							}
 							
 							// Create ConsumerKeyInfo with provider key details
-							consumerKey = &ConsumerKeyInfo{
+							consumerKey = &subnet.ConsumerKeyInfo{
 								ValidatorName:        localValidatorName,
 								ConsumerID:           consumerID,
 								ConsumerPubKey:       providerConsensusPubKey, // Use the provider's consensus key
@@ -1616,7 +1616,7 @@ func (h *ConsumerHandler) handleConsensusKeyAssignment(ctx context.Context, even
 			return nil
 		}
 
-		keyInfo := &ConsumerKeyInfo{
+		keyInfo := &subnet.ConsumerKeyInfo{
 			ValidatorName:    validatorName,
 			ConsumerID:       consumerID,
 			ConsumerPubKey:   consumerPubKey,
