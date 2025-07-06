@@ -61,11 +61,11 @@ func (m *K8sManager) SetPeerDiscovery(pd *PeerDiscovery) {
 }
 
 // GetClientset returns the Kubernetes clientset from the deployer
-func (m *K8sManager) GetClientset() kubernetes.Interface {
-	if m.deployer != nil {
-		return m.deployer.GetClientset()
+func (m *K8sManager) GetClientset() (kubernetes.Interface, error) {
+	if m.deployer == nil {
+		return nil, fmt.Errorf("deployer not initialized")
 	}
-	return nil
+	return m.deployer.GetClientset(), nil
 }
 
 // GetNamespaceForChain returns the namespace for a specific consumer chain

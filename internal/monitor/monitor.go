@@ -134,7 +134,11 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	logger.Info("Using CLI-based transaction service")
 
 	// Create consumer key store
-	consumerKeyStore := NewConsumerKeyStore(logger, k8sManager.GetClientset(), "provider")
+	clientset, err := k8sManager.GetClientset()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get clientset: %w", err)
+	}
+	consumerKeyStore := NewConsumerKeyStore(logger, clientset, "provider")
 
 	// Create event processor with K8s-enabled handlers
 	consumerHandler := NewConsumerHandlerWithK8s(logger, validatorSelector, subnetManager, k8sManager, txService, rpcClient, clientCtx, cfg.ProviderEndpoints)

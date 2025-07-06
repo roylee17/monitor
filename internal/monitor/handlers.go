@@ -334,8 +334,10 @@ func NewConsumerHandlerWithK8s(logger *slog.Logger, validatorSelector *selector.
 	var consumerKeyStore *ConsumerKeyStore
 	if k8sManager != nil {
 		// Get clientset from K8s manager for the key store
-		clientset := k8sManager.GetClientset()
-		if clientset != nil {
+		clientset, err := k8sManager.GetClientset()
+		if err != nil {
+			logger.Warn("Failed to get clientset for key store", "error", err)
+		} else {
 			consumerKeyStore = NewConsumerKeyStore(logger, clientset, "provider")
 			// Load existing keys from ConfigMaps
 			if err := consumerKeyStore.LoadFromConfigMaps(context.Background()); err != nil {
@@ -1431,7 +1433,11 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 				
 				// Load provider's priv_validator_key.json from Kubernetes secret
 				secretName := fmt.Sprintf("%s-keys", localValidatorName)
-				secret, err := h.k8sManager.GetClientset().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
+				clientset, err := h.k8sManager.GetClientset()
+				if err != nil {
+					return nil, fmt.Errorf("failed to get clientset: %w", err)
+				}
+				secret, err := clientset.CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
 				if err != nil {
 					return nil, fmt.Errorf("failed to get provider key secret: %w", err)
 				}
