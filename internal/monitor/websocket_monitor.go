@@ -12,6 +12,7 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/cometbft/cometbft/types"
+	"github.com/cosmos/interchain-security-monitor/internal/constants"
 )
 
 // WebSocketMonitor implements EventMonitor using WebSocket subscriptions
@@ -91,7 +92,7 @@ func (m *WebSocketMonitor) Start(ctx context.Context, processor *EventProcessor)
 	m.logger.Info("Successfully subscribed to blockchain events")
 
 	// Add periodic status check
-	statusTicker := time.NewTicker(30 * time.Second)
+	statusTicker := time.NewTicker(constants.WebSocketStatusInterval)
 	defer statusTicker.Stop()
 
 	eventCount := 0
@@ -108,7 +109,7 @@ func (m *WebSocketMonitor) Start(ctx context.Context, processor *EventProcessor)
 
 		case blockEvent := <-blockCh:
 			blockCount++
-			if blockCount%10 == 0 { // Log every 10 blocks
+			if blockCount%constants.WebSocketBlockLogInterval == 0 {
 				m.logger.Info("Received block events", "count", blockCount)
 			}
 			m.handleBlockEvent(blockEvent)

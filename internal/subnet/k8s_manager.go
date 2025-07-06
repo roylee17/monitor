@@ -12,6 +12,7 @@ import (
 
 	"cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/interchain-security-monitor/internal/constants"
 	"github.com/cosmos/interchain-security-monitor/internal/deployment"
 	"github.com/cosmos/interchain-security-monitor/internal/retry"
 	"k8s.io/client-go/kubernetes"
@@ -151,7 +152,7 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 	relayerAccounts := []RelayerAccount{
 		{
 			Address: relayerAddr,
-			Coins:   sdk.NewCoins(sdk.NewCoin(DefaultDenom, math.NewInt(DefaultRelayerFunds))), // 100M
+			Coins:   sdk.NewCoins(sdk.NewCoin(DefaultDenom, math.NewInt(constants.RelayerInitialFunds))),
 		},
 	}
 
@@ -329,11 +330,11 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 
 		// Consumer chain configuration
 		ConsumerConfig: deployment.ConsumerChainConfig{
-			UnbondingPeriod:       "1728000s", // 20 days
-			CCVTimeoutPeriod:      "2419200s", // 28 days
-			TransferTimeout:       "1800s",    // 30 minutes
-			BlocksPerTransmission: 1000,
-			RedistributionFrac:    "0.75",
+			UnbondingPeriod:       constants.ConsumerUnbondingPeriodStr,
+			CCVTimeoutPeriod:      constants.ConsumerCCVTimeoutPeriodStr,
+			TransferTimeout:       constants.ConsumerTransferTimeoutStr,
+			BlocksPerTransmission: constants.ConsumerBlocksPerTransmission,
+			RedistributionFrac:    constants.ConsumerRedistributionFrac,
 		},
 
 		// CCV Genesis patch
@@ -695,7 +696,7 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 	
 	// Retry configuration for background task
 	retryConfig := retry.Config{
-		MaxAttempts:  60,
+		MaxAttempts:  60, // 5 minutes total with 5s intervals
 		InitialDelay: 5 * time.Second,
 		MaxDelay:     30 * time.Second,
 		Multiplier:   1.0, // Keep constant delay for background checks
