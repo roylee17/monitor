@@ -46,7 +46,7 @@ type ConsumerHandler struct {
 	txService         transaction.Service
 	rpcClient         *rpcclient.HTTP
 	clientCtx         client.Context
-	healthMonitor     *HealthMonitor         // Consumer chain health monitoring
+	healthMonitor     *HealthMonitor // Consumer chain health monitoring
 
 	// Validator mappings for dynamic lookup
 	validatorAddressToName map[string]string        // Maps validator operator address to moniker
@@ -85,7 +85,6 @@ func NewConsumerHandlerWithK8s(logger *slog.Logger, validatorSelector *selector.
 			}
 		}
 	}
-
 
 	handler := &ConsumerHandler{
 		logger:                 logger,
@@ -906,14 +905,14 @@ func (h *ConsumerHandler) extractConsumerID(chainID string) (string, error) {
 	if lastHyphen == -1 || lastHyphen == len(chainID)-1 {
 		return "", fmt.Errorf("invalid chain ID format: %s (expected format: <name>-<id>)", chainID)
 	}
-	
+
 	consumerID := chainID[lastHyphen+1:]
-	
+
 	// Validate that the extracted ID is numeric
 	if _, err := strconv.Atoi(consumerID); err != nil {
 		return "", fmt.Errorf("invalid consumer ID in chain ID %s: %s is not numeric", chainID, consumerID)
 	}
-	
+
 	return consumerID, nil
 }
 
@@ -1029,7 +1028,7 @@ func (h *ConsumerHandler) handleLaunchedPhase(ctx context.Context, consumerID, c
 	h.consumerMutex.RLock()
 	consumerCtx, exists := h.consumerContexts[chainID]
 	h.consumerMutex.RUnlock()
-	
+
 	if !exists {
 		h.logger.Warn("No context found for consumer chain",
 			"chain_id", chainID,
@@ -1069,26 +1068,71 @@ func (h *ConsumerHandler) handleLaunchedPhase(ctx context.Context, consumerID, c
 		h.logger.Error("Failed to check if local validator is in initial set", "error", err)
 		return err
 	}
-	
-	if !keyInfo.Found {
-		h.logger.Info("Local validator is NOT in the CCV genesis initial validator set, skipping deployment",
+
+	// Check if validator is opted in (regardless of initial set)
+	isOptedIn, err := h.isLocalValidatorOptedIn(ctx, consumerID)
+	if err != nil {
+		h.logger.Error("Failed to check if local validator is opted in", "error", err)
+		return err
+	}
+
+	if !keyInfo.Found && !isOptedIn {
+		h.logger.Info("Local validator is NOT in the initial set and NOT opted in, skipping deployment",
 			"chain_id", chainID,
 			"consumer_id", consumerID,
 			"local_validator", h.validatorSelector.GetFromKey())
 		return nil
 	}
-	
-	h.logger.Info("Local validator IS in the CCV genesis initial validator set, proceeding with deployment",
-		"chain_id", chainID,
-		"consumer_id", consumerID,
-		"local_validator", h.validatorSelector.GetFromKey(),
-		"key_type", keyInfo.KeyType,
-		"key_value", keyInfo.KeyValue)
+
+	if !keyInfo.Found && isOptedIn {
+		h.logger.Info("Local validator is NOT in the CCV genesis initial validator set but IS opted in",
+			"chain_id", chainID,
+			"consumer_id", consumerID,
+			"local_validator", h.validatorSelector.GetFromKey(),
+			"info", "Will deploy as non-validator and join via VSC when provider sends update")
+	} else {
+		h.logger.Info("Local validator IS in the CCV genesis initial validator set, proceeding with deployment",
+			"chain_id", chainID,
+			"consumer_id", consumerID,
+			"local_validator", h.validatorSelector.GetFromKey(),
+			"key_type", keyInfo.KeyType,
+			"key_value", keyInfo.KeyValue)
+	}
 
 	// Select appropriate key based on what's in the initial validator set
-	consumerKey, err := h.selectConsumerKey(consumerID, keyInfo)
-	if err != nil {
-		return fmt.Errorf("failed to select consumer key: %w", err)
+	var consumerKey *subnet.ConsumerKeyInfo
+	if keyInfo.Found {
+		// Validator is in initial set - use the key type from genesis
+		consumerKey, err = h.selectConsumerKey(consumerID, keyInfo)
+		if err != nil {
+			return fmt.Errorf("failed to select consumer key: %w", err)
+		}
+	} else if isOptedIn {
+		// Validator is NOT in initial set but IS opted in - use provider key or assigned consumer key
+		h.logger.Info("Selecting key for late-joining validator",
+			"consumer_id", consumerID,
+			"local_validator", h.validatorSelector.GetFromKey())
+
+		// Check if a consumer key was assigned
+		if h.consumerKeyStore != nil && h.validatorSelector != nil {
+			localValidatorName := h.validatorSelector.GetFromKey()
+			if localValidatorName != "" {
+				storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
+				if err == nil && storedKey != nil {
+					h.logger.Info("Using assigned consumer key for late-joining validator",
+						"validator", localValidatorName,
+						"consumer_id", consumerID,
+						"pubkey", storedKey.ConsumerPubKey)
+					consumerKey = storedKey
+				}
+			}
+		}
+
+		// If no consumer key assigned, use provider key
+		if consumerKey == nil {
+			h.logger.Info("No consumer key assigned, using provider key for late-joining validator")
+			// consumerKey remains nil to signal using provider key (deployment will handle this)
+		}
 	}
 
 	// Calculate ports for the consumer chain
@@ -1142,7 +1186,7 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 		// Initial set has consumer key - we MUST use the consumer key
 		h.logger.Info("Initial validator set contains CONSUMER key, will use consumer key for deployment",
 			"consumer_id", consumerID)
-		
+
 		if h.consumerKeyStore != nil && h.validatorSelector != nil {
 			localValidatorName := h.validatorSelector.GetFromKey()
 			if localValidatorName != "" {
@@ -1165,7 +1209,7 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 		// Initial set has provider key - we MUST use provider key
 		h.logger.Info("Initial validator set contains PROVIDER key, will use provider key for deployment",
 			"consumer_id", consumerID)
-		
+
 		// Get the provider key to use for deployment
 		if h.validatorSelector != nil {
 			localValidatorName := h.validatorSelector.GetFromKey()
@@ -1180,13 +1224,13 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 							"reason", "Key assignment happened after spawn time")
 					}
 				}
-				
+
 				// Get provider consensus public key
 				providerConsensusPubKey, err := h.getLocalProviderConsensusKey()
 				if err != nil {
 					return nil, fmt.Errorf("failed to get provider consensus key: %w", err)
 				}
-				
+
 				// Load provider's priv_validator_key.json from Kubernetes secret
 				secretName := fmt.Sprintf("%s-keys", localValidatorName)
 				clientset, err := h.k8sManager.GetClientset()
@@ -1197,23 +1241,23 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 				if err != nil {
 					return nil, fmt.Errorf("failed to get provider key secret: %w", err)
 				}
-				
+
 				privValidatorKeyData, ok := secret.Data["priv_validator_key.json"]
 				if !ok {
 					return nil, fmt.Errorf("priv_validator_key.json not found in secret %s", secretName)
 				}
-				
+
 				// Get provider address from keyring
 				keyInfo, err := h.clientCtx.Keyring.Key(localValidatorName)
 				if err != nil {
 					return nil, fmt.Errorf("failed to load provider key from keyring: %w", err)
 				}
-				
+
 				addr, err := keyInfo.GetAddress()
 				if err != nil {
 					return nil, fmt.Errorf("failed to get address from key info: %w", err)
 				}
-				
+
 				// Create ConsumerKeyInfo with provider key details
 				consumerKey := &subnet.ConsumerKeyInfo{
 					ValidatorName:        localValidatorName,
@@ -1224,17 +1268,17 @@ func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialS
 					AssignmentHeight:     0, // Not assigned, using provider key
 					PrivValidatorKeyJSON: string(privValidatorKeyData),
 				}
-				
+
 				h.logger.Info("Using provider key for consumer deployment",
 					"validator", localValidatorName,
 					"consumer_id", consumerID,
 					"pubkey", providerConsensusPubKey)
-				
+
 				return consumerKey, nil
 			}
 		}
 	}
-	
+
 	return nil, fmt.Errorf("unable to select consumer key")
 }
 
@@ -1261,17 +1305,17 @@ func (h *ConsumerHandler) getOptedInValidatorMonikers(consumerID string) ([]stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to query validators: %w", err)
 	}
-	
+
 	// Build consensus address to moniker mapping
 	consAddrToMoniker := make(map[string]string)
 	monikerCount := make(map[string]int)
-	
+
 	for _, val := range validatorsResp.Validators {
 		if val.ConsensusPubkey == nil {
 			h.logger.Error("Validator has nil consensus pubkey", "operator", val.OperatorAddress)
 			continue
 		}
-		
+
 		// Unpack the Any type to get the actual public key
 		var pubKey cryptotypes.PubKey
 		err := h.clientCtx.InterfaceRegistry.UnpackAny(val.ConsensusPubkey, &pubKey)
@@ -1281,27 +1325,27 @@ func (h *ConsumerHandler) getOptedInValidatorMonikers(consumerID string) ([]stri
 				"error", err)
 			continue
 		}
-		
+
 		// Get consensus address from the unpacked pubkey
 		sdkConsAddr := sdk.ConsAddress(pubKey.Address())
 		moniker := val.Description.Moniker
-		
+
 		// Check for empty moniker
 		if moniker == "" {
 			h.logger.Warn("Validator has empty moniker, using operator address",
 				"operator", val.OperatorAddress)
 			moniker = val.OperatorAddress
 		}
-		
+
 		consAddrToMoniker[sdkConsAddr.String()] = moniker
 		monikerCount[moniker]++
-		
+
 		h.logger.Debug("Mapped validator consensus address",
 			"operator", val.OperatorAddress,
 			"moniker", moniker,
 			"consensus_addr", sdkConsAddr.String())
 	}
-	
+
 	// Warn about duplicate monikers
 	for moniker, count := range monikerCount {
 		if count > 1 {
@@ -1310,7 +1354,7 @@ func (h *ConsumerHandler) getOptedInValidatorMonikers(consumerID string) ([]stri
 				"count", count)
 		}
 	}
-	
+
 	// Map opted-in addresses to monikers
 	actualOptedInValidators := make([]string, 0, len(optedIn))
 	for _, consAddrStr := range optedIn {
@@ -1323,7 +1367,7 @@ func (h *ConsumerHandler) getOptedInValidatorMonikers(consumerID string) ([]stri
 		}
 		actualOptedInValidators = append(actualOptedInValidators, moniker)
 	}
-	
+
 	return actualOptedInValidators, nil
 }
 
@@ -1414,8 +1458,6 @@ func (h *ConsumerHandler) handleConsensusKeyAssignment(ctx context.Context, even
 
 // Removed: updateCCVPatchWithAssignedKeys function (obsolete)
 
-
-
 // getValidatorNameFromAddress maps a validator address to its moniker/name.
 //
 // This function is essential for correlating validator addresses in events
@@ -1460,26 +1502,23 @@ func (h *ConsumerHandler) getValidatorNameFromAddress(address string) string {
 	return name
 }
 
-
 // OBSOLETE: queryValidatorConsensusPairs was used by the obsolete updateCCVPatchWithAssignedKeys function.
 // It's no longer needed because the CCV patch already contains the correct keys from the provider chain.
-
-
 
 func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]interface{}, consumerID string) (*InitialSetKeyInfo, error) {
 	if h.validatorSelector == nil {
 		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("validator selector not available")
 	}
-	
+
 	// Get our local validator's provider consensus key
 	localProviderKey, err := h.getLocalProviderConsensusKey()
 	if err != nil {
 		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("failed to get local provider consensus key: %w", err)
 	}
-	
+
 	// Navigate to the initial validator set in the CCV patch
 	var initialValSet []interface{}
-	
+
 	if provider, ok := ccvPatch["provider"].(map[string]interface{}); ok {
 		// Direct structure: provider.initial_val_set
 		if valSet, ok := provider["initial_val_set"].([]interface{}); ok {
@@ -1495,32 +1534,32 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 			}
 		}
 	}
-	
+
 	if initialValSet == nil {
 		return &InitialSetKeyInfo{Found: false}, fmt.Errorf("initial_val_set not found in CCV patch")
 	}
-	
+
 	h.logger.Info("Checking if local validator is in initial validator set",
 		"provider_consensus_key", localProviderKey,
 		"initial_set_size", len(initialValSet))
-	
+
 	// Check if our provider key is in the initial set (no consumer key assigned case)
 	for _, val := range initialValSet {
 		validator, ok := val.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		
+
 		pubKeyMap, ok := validator["pub_key"].(map[string]interface{})
 		if !ok {
 			continue
 		}
-		
+
 		ed25519Key, ok := pubKeyMap["ed25519"].(string)
 		if !ok {
 			continue
 		}
-		
+
 		// Compare with our provider consensus key
 		if ed25519Key == localProviderKey {
 			h.logger.Info("Found local validator in initial validator set with PROVIDER key",
@@ -1532,17 +1571,17 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 			}, nil
 		}
 	}
-	
+
 	// If not found with provider key, check if we have an assigned consumer key
 	h.logger.Info("Provider key not found in initial set, checking for assigned consumer key")
-	
+
 	// Get local validator name
 	localValidatorName := h.validatorSelector.GetFromKey()
 	if localValidatorName == "" {
 		h.logger.Warn("Could not determine local validator name")
 		return &InitialSetKeyInfo{Found: false}, nil
 	}
-	
+
 	// Check if we have a stored consumer key assignment
 	if h.consumerKeyStore != nil {
 		consumerKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
@@ -1552,24 +1591,24 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 			if consumerPubKey != "" {
 				h.logger.Info("Checking if local validator's CONSUMER key is in initial set",
 					"consumer_key", consumerPubKey)
-				
+
 				// Check if our consumer key is in the initial set
 				for _, val := range initialValSet {
 					validator, ok := val.(map[string]interface{})
 					if !ok {
 						continue
 					}
-					
+
 					pubKeyMap, ok := validator["pub_key"].(map[string]interface{})
 					if !ok {
 						continue
 					}
-					
+
 					ed25519Key, ok := pubKeyMap["ed25519"].(string)
 					if !ok {
 						continue
 					}
-					
+
 					if ed25519Key == consumerPubKey {
 						h.logger.Info("Found local validator in initial validator set with CONSUMER key",
 							"matching_key", consumerPubKey)
@@ -1583,11 +1622,11 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 			}
 		}
 	}
-	
+
 	h.logger.Info("Local validator NOT found in initial validator set",
 		"provider_key", localProviderKey,
 		"initial_set_validators", len(initialValSet))
-	
+
 	return &InitialSetKeyInfo{Found: false}, nil
 }
 
@@ -1597,7 +1636,7 @@ func (h *ConsumerHandler) getLocalProviderConsensusKey() (string, error) {
 	if validatorAddr == "" {
 		return "", fmt.Errorf("local validator address not available")
 	}
-	
+
 	// Query validator info
 	stakingClient := stakingtypes.NewQueryClient(h.clientCtx)
 	resp, err := stakingClient.Validator(context.Background(), &stakingtypes.QueryValidatorRequest{
@@ -1606,16 +1645,51 @@ func (h *ConsumerHandler) getLocalProviderConsensusKey() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to query validator %s: %w", validatorAddr, err)
 	}
-	
+
 	// Unpack the consensus pubkey
 	var pubKey cryptotypes.PubKey
 	err = h.clientCtx.InterfaceRegistry.UnpackAny(resp.Validator.ConsensusPubkey, &pubKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to unpack consensus pubkey: %w", err)
 	}
-	
+
 	// Return base64-encoded key
 	return base64.StdEncoding.EncodeToString(pubKey.Bytes()), nil
+}
+
+// isLocalValidatorOptedIn checks if the local validator has opted into a consumer chain
+func (h *ConsumerHandler) isLocalValidatorOptedIn(ctx context.Context, consumerID string) (bool, error) {
+	if h.blockchainState == nil {
+		return false, fmt.Errorf("blockchain state provider not available")
+	}
+
+	if h.validatorSelector == nil {
+		return false, fmt.Errorf("validator selector not available")
+	}
+
+	// Get local validator's provider address
+	localValidatorAddr := h.validatorSelector.GetValidatorAddress()
+	if localValidatorAddr == "" {
+		return false, fmt.Errorf("failed to get local validator address")
+	}
+
+	// Get list of opted-in validators
+	optedInValidators, err := h.blockchainState.GetOptedInValidators(ctx, consumerID)
+	if err != nil {
+		return false, fmt.Errorf("failed to get opted-in validators: %w", err)
+	}
+
+	// Check if local validator is in the list
+	for _, addr := range optedInValidators {
+		if addr == localValidatorAddr {
+			h.logger.Info("Local validator is opted in to consumer chain",
+				"consumer_id", consumerID,
+				"validator_address", localValidatorAddr)
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func (h *ConsumerHandler) refreshValidatorMappings(ctx context.Context) error {
