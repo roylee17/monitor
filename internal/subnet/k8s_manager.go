@@ -283,12 +283,15 @@ func (m *K8sManager) MonitorConsumerChainHealth(ctx context.Context, chainID str
 func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
 	// Initialize deployment error tracker
 	deployErr := NewDeploymentError(chainID, "deployment")
-	// Determine validator name from consumer key or environment
-	validatorName := ""
-	if consumerKey != nil {
+	// Use the validator name from K8sManager, which was set during initialization
+	validatorName := m.validatorName
+	// Override with consumer key validator name if provided and different
+	if consumerKey != nil && consumerKey.ValidatorName != "" && consumerKey.ValidatorName != validatorName {
+		m.logger.Warn("Consumer key validator name differs from manager validator name",
+			"manager_validator", validatorName,
+			"consumer_key_validator", consumerKey.ValidatorName,
+			"using", consumerKey.ValidatorName)
 		validatorName = consumerKey.ValidatorName
-	} else {
-		validatorName = os.Getenv("VALIDATOR_NAME")
 	}
 
 	m.logger.Info("Deploying consumer with specific ports",
