@@ -1239,298 +1239,7 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 	// Handle specific phase transitions
 	switch newPhase {
 	case "CONSUMER_PHASE_LAUNCHED", "3": // Phase 3 is LAUNCHED
-		h.logger.Info("🚀 Consumer chain entered LAUNCHED phase!",
-			"consumer_id", consumerID,
-			"chain_id", chainID)
-
-		// Check if we have context for this chain
-		h.consumerMutex.RLock()
-		ctx, exists := h.consumerContexts[chainID]
-		h.consumerMutex.RUnlock()
-		if exists {
-			// Note: Direct NodePort services are created during consumer deployment
-			// No additional gateway configuration needed with direct TCP exposure
-
-			// Deploy the consumer chain
-			if h.k8sManager != nil {
-				h.logger.Info("Preparing to deploy consumer chain",
-					"chain_id", chainID,
-					"consumer_id", consumerID)
-
-				// Get CCV genesis if not already fetched
-				if ctx.CCVPatch == nil {
-					genesis, err := h.fetchCCVPatch(consumerID)
-					if err != nil {
-						h.logger.Error("Failed to fetch CCV genesis", "error", err)
-						return err
-					}
-					h.consumerMutex.Lock()
-					if ctxToUpdate, ok := h.consumerContexts[chainID]; ok {
-						ctxToUpdate.CCVPatch = genesis
-						h.consumerContexts[chainID] = ctxToUpdate
-						ctx = ctxToUpdate // Update the local ctx variable with the new CCV patch
-					}
-					h.consumerMutex.Unlock()
-				}
-
-				// Check if local validator is in the CCV genesis initial validator set
-				keyInfo, err := h.isLocalValidatorInInitialSet(ctx.CCVPatch, consumerID)
-				if err != nil {
-					h.logger.Error("Failed to check if local validator is in initial set", "error", err)
-					return err
-				}
-				
-				if !keyInfo.Found {
-					h.logger.Info("Local validator is NOT in the CCV genesis initial validator set, skipping deployment",
-						"chain_id", chainID,
-						"consumer_id", consumerID,
-						"local_validator", h.validatorSelector.GetFromKey())
-					return nil
-				}
-				
-				h.logger.Info("Local validator IS in the CCV genesis initial validator set, proceeding with deployment",
-					"chain_id", chainID,
-					"consumer_id", consumerID,
-					"local_validator", h.validatorSelector.GetFromKey(),
-					"key_type", keyInfo.KeyType,
-					"key_value", keyInfo.KeyValue)
-
-				// Note: The CCV patch already contains the correct keys:
-				// - Consumer keys for validators who assigned them
-				// - Provider keys for validators who didn't assign them
-				// No manual update is needed.
-
-				// Smart key selection: Use the key that's in the initial validator set
-				var consumerKey *subnet.ConsumerKeyInfo
-				
-				if keyInfo.KeyType == KeyTypeConsumer {
-					// Initial set has consumer key - we MUST use the consumer key
-					h.logger.Info("Initial validator set contains CONSUMER key, will use consumer key for deployment",
-						"consumer_id", consumerID)
-					
-					if h.consumerKeyStore != nil && h.validatorSelector != nil {
-						localValidatorName := h.validatorSelector.GetFromKey()
-						if localValidatorName != "" {
-							storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
-							if err != nil {
-								h.logger.Error("Initial set has consumer key but not found in store",
-									"validator", localValidatorName,
-									"consumer_id", consumerID,
-									"error", err)
-								return fmt.Errorf("consumer key in initial set but not found locally: %w", err)
-							}
-							consumerKey = storedKey
-							h.logger.Info("Using stored consumer key for deployment",
-								"validator", localValidatorName,
-								"consumer_id", consumerID,
-								"pubkey", storedKey.ConsumerPubKey)
-						}
-					}
-				} else {
-					// Initial set has provider key - we MUST use provider key (even if consumer key was assigned)
-					h.logger.Info("Initial validator set contains PROVIDER key, will use provider key for deployment",
-						"consumer_id", consumerID)
-					
-					// Get the provider key to use for deployment
-					if h.validatorSelector != nil {
-						localValidatorName := h.validatorSelector.GetFromKey()
-						if localValidatorName != "" {
-							// Check if a consumer key was assigned (for logging purposes)
-							if h.consumerKeyStore != nil {
-								if storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName); err == nil && storedKey != nil {
-									h.logger.Warn("Consumer key was assigned but initial set has provider key - using provider key",
-										"validator", localValidatorName,
-										"consumer_id", consumerID,
-										"assigned_consumer_key", storedKey.ConsumerPubKey,
-										"reason", "Key assignment happened after spawn time")
-								}
-							}
-							
-							// Get provider consensus public key
-							providerConsensusPubKey, err := h.getLocalProviderConsensusKey()
-							if err != nil {
-								return fmt.Errorf("failed to get provider consensus key: %w", err)
-							}
-							
-							// Load provider's priv_validator_key.json from Kubernetes secret
-							secretName := fmt.Sprintf("%s-keys", localValidatorName)
-							secret, err := h.k8sManager.GetClientset().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
-							if err != nil {
-								return fmt.Errorf("failed to get provider key secret: %w", err)
-							}
-							
-							privValidatorKeyData, ok := secret.Data["priv_validator_key.json"]
-							if !ok {
-								return fmt.Errorf("priv_validator_key.json not found in secret %s", secretName)
-							}
-							
-							// Get provider address from keyring
-							keyInfo, err := h.clientCtx.Keyring.Key(localValidatorName)
-							if err != nil {
-								return fmt.Errorf("failed to load provider key from keyring: %w", err)
-							}
-							
-							addr, err := keyInfo.GetAddress()
-							if err != nil {
-								return fmt.Errorf("failed to get address from key info: %w", err)
-							}
-							
-							// Create ConsumerKeyInfo with provider key details
-							consumerKey = &subnet.ConsumerKeyInfo{
-								ValidatorName:        localValidatorName,
-								ConsumerID:           consumerID,
-								ConsumerPubKey:       providerConsensusPubKey, // Use the provider's consensus key
-								ConsumerAddress:      addr.String(),
-								ProviderAddress:      addr.String(),
-								AssignmentHeight:     0, // Not assigned, using provider key
-								PrivValidatorKeyJSON: string(privValidatorKeyData), // The entire priv_validator_key.json content
-							}
-							
-							h.logger.Info("Using provider key for consumer deployment",
-								"validator", localValidatorName,
-								"consumer_id", consumerID,
-								"pubkey", providerConsensusPubKey)
-						}
-					}
-				}
-
-				// Deploy with dynamic peer discovery from provider chain
-				// IMPORTANT: Use chainID for port calculation to match Hermes configuration
-				ports, err := subnet.CalculatePorts(chainID)
-				if err != nil {
-					h.logger.Error("Failed to calculate ports for consumer chain",
-						"error", err,
-						"chain_id", chainID)
-					return nil
-				}
-
-				// Query actual opted-in validators from blockchain
-				if h.blockchainState == nil {
-					return fmt.Errorf("blockchain state provider not available")
-				}
-
-				optedIn, err := h.blockchainState.GetOptedInValidators(context.Background(), consumerID)
-				if err != nil {
-					return fmt.Errorf("failed to query opted-in validators for consumer %s: %w", consumerID, err)
-				}
-
-				// Map provider consensus addresses to validator monikers
-				// This is required because:
-				// 1. The opted-in query returns consensus addresses (cosmosvalcons...)
-				// 2. The Kubernetes infrastructure uses validator monikers for peer discovery
-				
-				// Option 4 Implementation: Query validator info to get monikers
-				// Since SDK doesn't have direct ConsAddr query, we need to query all validators once
-				stakingClient := stakingtypes.NewQueryClient(h.clientCtx)
-				validatorsResp, err := stakingClient.Validators(context.Background(), &stakingtypes.QueryValidatorsRequest{
-					Status: "BOND_STATUS_BONDED",
-					Pagination: &query.PageRequest{
-						Limit: 1000,
-					},
-				})
-				if err != nil {
-					return fmt.Errorf("failed to query validators: %w", err)
-				}
-				
-				// Build consensus address to moniker mapping
-				consAddrToMoniker := make(map[string]string)
-				monikerCount := make(map[string]int) // Track moniker uniqueness
-				
-				for _, val := range validatorsResp.Validators {
-					// The validator query returns validators with Any-encoded pubkeys
-					// We need to unpack them to get the actual consensus address
-					if val.ConsensusPubkey == nil {
-						h.logger.Error("Validator has nil consensus pubkey",
-							"operator", val.OperatorAddress)
-						continue
-					}
-					
-					// Unpack the Any type to get the actual public key
-					var pubKey cryptotypes.PubKey
-					err := h.clientCtx.InterfaceRegistry.UnpackAny(val.ConsensusPubkey, &pubKey)
-					if err != nil {
-						h.logger.Error("Failed to unpack consensus pubkey",
-							"operator", val.OperatorAddress,
-							"error", err)
-						continue
-					}
-					
-					// Get consensus address from the unpacked pubkey
-					sdkConsAddr := sdk.ConsAddress(pubKey.Address())
-					moniker := val.Description.Moniker
-					
-					// Check for empty moniker
-					if moniker == "" {
-						h.logger.Warn("Validator has empty moniker, using operator address",
-							"operator", val.OperatorAddress)
-						moniker = val.OperatorAddress
-					}
-					
-					consAddrToMoniker[sdkConsAddr.String()] = moniker
-					monikerCount[moniker]++
-					
-					h.logger.Debug("Mapped validator consensus address",
-						"operator", val.OperatorAddress,
-						"moniker", moniker,
-						"consensus_addr", sdkConsAddr.String())
-				}
-				
-				// Warn about duplicate monikers
-				for moniker, count := range monikerCount {
-					if count > 1 {
-						h.logger.Warn("Multiple validators share the same moniker",
-							"moniker", moniker,
-							"count", count)
-					}
-				}
-				
-				// Map opted-in addresses to monikers
-				actualOptedInValidators := make([]string, 0, len(optedIn))
-				for _, consAddrStr := range optedIn {
-					moniker, ok := consAddrToMoniker[consAddrStr]
-					if !ok {
-						return fmt.Errorf("failed to find moniker for consensus address %s", consAddrStr)
-					}
-					if moniker == "" {
-						return fmt.Errorf("validator moniker is empty for consensus address %s", consAddrStr)
-					}
-					actualOptedInValidators = append(actualOptedInValidators, moniker)
-				}
-				
-				h.logger.Info("Successfully mapped opted-in validators",
-					"consumer_id", consumerID,
-					"opted_in_count", len(optedIn),
-					"mapped_monikers", actualOptedInValidators)
-
-				// Convert consumer key if available
-				var subnetKeyInfo *subnet.ConsumerKeyInfo
-				if consumerKey != nil {
-					subnetKeyInfo = &subnet.ConsumerKeyInfo{
-						ValidatorName:        consumerKey.ValidatorName,
-						ConsumerID:           consumerKey.ConsumerID,
-						ConsumerPubKey:       consumerKey.ConsumerPubKey,
-						ConsumerAddress:      consumerKey.ConsumerAddress,
-						ProviderAddress:      consumerKey.ProviderAddress,
-						AssignmentHeight:     consumerKey.AssignmentHeight,
-						PrivValidatorKeyJSON: consumerKey.PrivValidatorKeyJSON,
-					}
-				}
-
-				if err := h.k8sManager.DeployConsumerWithDynamicPeersAndKeyAndValidators(
-					context.Background(), chainID, consumerID, *ports,
-					ctx.CCVPatch, subnetKeyInfo, actualOptedInValidators); err != nil {
-					h.logger.Error("Failed to deploy consumer chain", "error", err, "has_key", consumerKey != nil)
-					return err
-				}
-
-				// Start health monitoring
-				go h.healthMonitor.StartMonitoring(chainID)
-			}
-		} else {
-			h.logger.Warn("No context found for consumer chain",
-				"chain_id", chainID,
-				"consumer_id", consumerID)
-		}
+		return h.handleLaunchedPhase(ctx, consumerID, chainID)
 
 	case "CONSUMER_PHASE_STOPPED", "4": // Phase 4 is STOPPED
 		h.logger.Info("Consumer chain entered STOPPED phase",
@@ -1563,6 +1272,299 @@ func (h *ConsumerHandler) HandlePhaseTransition(ctx context.Context, consumerID,
 	}
 
 	return nil
+}
+
+// handleLaunchedPhase processes the LAUNCHED phase transition for a consumer chain
+func (h *ConsumerHandler) handleLaunchedPhase(ctx context.Context, consumerID, chainID string) error {
+	h.logger.Info("🚀 Consumer chain entered LAUNCHED phase!",
+		"consumer_id", consumerID,
+		"chain_id", chainID)
+
+	// Check if we have context for this chain
+	h.consumerMutex.RLock()
+	consumerCtx, exists := h.consumerContexts[chainID]
+	h.consumerMutex.RUnlock()
+	
+	if !exists {
+		h.logger.Warn("No context found for consumer chain",
+			"chain_id", chainID,
+			"consumer_id", consumerID)
+		return nil
+	}
+
+	// Deploy the consumer chain if k8s manager is available
+	if h.k8sManager == nil {
+		h.logger.Info("K8s manager not available, skipping deployment")
+		return nil
+	}
+
+	h.logger.Info("Preparing to deploy consumer chain",
+		"chain_id", chainID,
+		"consumer_id", consumerID)
+
+	// Get CCV genesis if not already fetched
+	if consumerCtx.CCVPatch == nil {
+		genesis, err := h.fetchCCVPatch(consumerID)
+		if err != nil {
+			h.logger.Error("Failed to fetch CCV genesis", "error", err)
+			return err
+		}
+		h.consumerMutex.Lock()
+		if ctxToUpdate, ok := h.consumerContexts[chainID]; ok {
+			ctxToUpdate.CCVPatch = genesis
+			h.consumerContexts[chainID] = ctxToUpdate
+			consumerCtx = ctxToUpdate
+		}
+		h.consumerMutex.Unlock()
+	}
+
+	// Check if local validator is in the initial validator set
+	keyInfo, err := h.isLocalValidatorInInitialSet(consumerCtx.CCVPatch, consumerID)
+	if err != nil {
+		h.logger.Error("Failed to check if local validator is in initial set", "error", err)
+		return err
+	}
+	
+	if !keyInfo.Found {
+		h.logger.Info("Local validator is NOT in the CCV genesis initial validator set, skipping deployment",
+			"chain_id", chainID,
+			"consumer_id", consumerID,
+			"local_validator", h.validatorSelector.GetFromKey())
+		return nil
+	}
+	
+	h.logger.Info("Local validator IS in the CCV genesis initial validator set, proceeding with deployment",
+		"chain_id", chainID,
+		"consumer_id", consumerID,
+		"local_validator", h.validatorSelector.GetFromKey(),
+		"key_type", keyInfo.KeyType,
+		"key_value", keyInfo.KeyValue)
+
+	// Select appropriate key based on what's in the initial validator set
+	consumerKey, err := h.selectConsumerKey(consumerID, keyInfo)
+	if err != nil {
+		return fmt.Errorf("failed to select consumer key: %w", err)
+	}
+
+	// Calculate ports for the consumer chain
+	ports, err := subnet.CalculatePorts(chainID)
+	if err != nil {
+		h.logger.Error("Failed to calculate ports for consumer chain",
+			"error", err,
+			"chain_id", chainID)
+		return err
+	}
+
+	// Get opted-in validators and map to monikers
+	actualOptedInValidators, err := h.getOptedInValidatorMonikers(consumerID)
+	if err != nil {
+		return fmt.Errorf("failed to get opted-in validator monikers: %w", err)
+	}
+
+	h.logger.Info("Successfully mapped opted-in validators",
+		"consumer_id", consumerID,
+		"opted_in_count", len(actualOptedInValidators),
+		"mapped_monikers", actualOptedInValidators)
+
+	// Deploy the consumer chain
+	if err := h.k8sManager.DeployConsumerWithDynamicPeersAndKeyAndValidators(
+		context.Background(), chainID, consumerID, *ports,
+		consumerCtx.CCVPatch, consumerKey, actualOptedInValidators); err != nil {
+		h.logger.Error("Failed to deploy consumer chain", "error", err, "has_key", consumerKey != nil)
+		return err
+	}
+
+	// Start health monitoring
+	go h.healthMonitor.StartMonitoring(chainID)
+
+	return nil
+}
+
+// selectConsumerKey selects the appropriate key based on what's in the initial validator set
+func (h *ConsumerHandler) selectConsumerKey(consumerID string, keyInfo *InitialSetKeyInfo) (*subnet.ConsumerKeyInfo, error) {
+	if keyInfo.KeyType == KeyTypeConsumer {
+		// Initial set has consumer key - we MUST use the consumer key
+		h.logger.Info("Initial validator set contains CONSUMER key, will use consumer key for deployment",
+			"consumer_id", consumerID)
+		
+		if h.consumerKeyStore != nil && h.validatorSelector != nil {
+			localValidatorName := h.validatorSelector.GetFromKey()
+			if localValidatorName != "" {
+				storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName)
+				if err != nil {
+					h.logger.Error("Initial set has consumer key but not found in store",
+						"validator", localValidatorName,
+						"consumer_id", consumerID,
+						"error", err)
+					return nil, fmt.Errorf("consumer key in initial set but not found locally: %w", err)
+				}
+				h.logger.Info("Using stored consumer key for deployment",
+					"validator", localValidatorName,
+					"consumer_id", consumerID,
+					"pubkey", storedKey.ConsumerPubKey)
+				return storedKey, nil
+			}
+		}
+	} else {
+		// Initial set has provider key - we MUST use provider key
+		h.logger.Info("Initial validator set contains PROVIDER key, will use provider key for deployment",
+			"consumer_id", consumerID)
+		
+		// Get the provider key to use for deployment
+		if h.validatorSelector != nil {
+			localValidatorName := h.validatorSelector.GetFromKey()
+			if localValidatorName != "" {
+				// Log if a consumer key was assigned but not used
+				if h.consumerKeyStore != nil {
+					if storedKey, err := h.consumerKeyStore.GetConsumerKey(consumerID, localValidatorName); err == nil && storedKey != nil {
+						h.logger.Warn("Consumer key was assigned but initial set has provider key - using provider key",
+							"validator", localValidatorName,
+							"consumer_id", consumerID,
+							"assigned_consumer_key", storedKey.ConsumerPubKey,
+							"reason", "Key assignment happened after spawn time")
+					}
+				}
+				
+				// Get provider consensus public key
+				providerConsensusPubKey, err := h.getLocalProviderConsensusKey()
+				if err != nil {
+					return nil, fmt.Errorf("failed to get provider consensus key: %w", err)
+				}
+				
+				// Load provider's priv_validator_key.json from Kubernetes secret
+				secretName := fmt.Sprintf("%s-keys", localValidatorName)
+				secret, err := h.k8sManager.GetClientset().CoreV1().Secrets("provider").Get(context.Background(), secretName, metav1.GetOptions{})
+				if err != nil {
+					return nil, fmt.Errorf("failed to get provider key secret: %w", err)
+				}
+				
+				privValidatorKeyData, ok := secret.Data["priv_validator_key.json"]
+				if !ok {
+					return nil, fmt.Errorf("priv_validator_key.json not found in secret %s", secretName)
+				}
+				
+				// Get provider address from keyring
+				keyInfo, err := h.clientCtx.Keyring.Key(localValidatorName)
+				if err != nil {
+					return nil, fmt.Errorf("failed to load provider key from keyring: %w", err)
+				}
+				
+				addr, err := keyInfo.GetAddress()
+				if err != nil {
+					return nil, fmt.Errorf("failed to get address from key info: %w", err)
+				}
+				
+				// Create ConsumerKeyInfo with provider key details
+				consumerKey := &subnet.ConsumerKeyInfo{
+					ValidatorName:        localValidatorName,
+					ConsumerID:           consumerID,
+					ConsumerPubKey:       providerConsensusPubKey,
+					ConsumerAddress:      addr.String(),
+					ProviderAddress:      addr.String(),
+					AssignmentHeight:     0, // Not assigned, using provider key
+					PrivValidatorKeyJSON: string(privValidatorKeyData),
+				}
+				
+				h.logger.Info("Using provider key for consumer deployment",
+					"validator", localValidatorName,
+					"consumer_id", consumerID,
+					"pubkey", providerConsensusPubKey)
+				
+				return consumerKey, nil
+			}
+		}
+	}
+	
+	return nil, fmt.Errorf("unable to select consumer key")
+}
+
+// getOptedInValidatorMonikers gets the monikers of opted-in validators
+func (h *ConsumerHandler) getOptedInValidatorMonikers(consumerID string) ([]string, error) {
+	// Query actual opted-in validators from blockchain
+	if h.blockchainState == nil {
+		return nil, fmt.Errorf("blockchain state provider not available")
+	}
+
+	optedIn, err := h.blockchainState.GetOptedInValidators(context.Background(), consumerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query opted-in validators for consumer %s: %w", consumerID, err)
+	}
+
+	// Query all validators to build consensus address to moniker mapping
+	stakingClient := stakingtypes.NewQueryClient(h.clientCtx)
+	validatorsResp, err := stakingClient.Validators(context.Background(), &stakingtypes.QueryValidatorsRequest{
+		Status: "BOND_STATUS_BONDED",
+		Pagination: &query.PageRequest{
+			Limit: 1000,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to query validators: %w", err)
+	}
+	
+	// Build consensus address to moniker mapping
+	consAddrToMoniker := make(map[string]string)
+	monikerCount := make(map[string]int)
+	
+	for _, val := range validatorsResp.Validators {
+		if val.ConsensusPubkey == nil {
+			h.logger.Error("Validator has nil consensus pubkey", "operator", val.OperatorAddress)
+			continue
+		}
+		
+		// Unpack the Any type to get the actual public key
+		var pubKey cryptotypes.PubKey
+		err := h.clientCtx.InterfaceRegistry.UnpackAny(val.ConsensusPubkey, &pubKey)
+		if err != nil {
+			h.logger.Error("Failed to unpack consensus pubkey",
+				"operator", val.OperatorAddress,
+				"error", err)
+			continue
+		}
+		
+		// Get consensus address from the unpacked pubkey
+		sdkConsAddr := sdk.ConsAddress(pubKey.Address())
+		moniker := val.Description.Moniker
+		
+		// Check for empty moniker
+		if moniker == "" {
+			h.logger.Warn("Validator has empty moniker, using operator address",
+				"operator", val.OperatorAddress)
+			moniker = val.OperatorAddress
+		}
+		
+		consAddrToMoniker[sdkConsAddr.String()] = moniker
+		monikerCount[moniker]++
+		
+		h.logger.Debug("Mapped validator consensus address",
+			"operator", val.OperatorAddress,
+			"moniker", moniker,
+			"consensus_addr", sdkConsAddr.String())
+	}
+	
+	// Warn about duplicate monikers
+	for moniker, count := range monikerCount {
+		if count > 1 {
+			h.logger.Warn("Multiple validators share the same moniker",
+				"moniker", moniker,
+				"count", count)
+		}
+	}
+	
+	// Map opted-in addresses to monikers
+	actualOptedInValidators := make([]string, 0, len(optedIn))
+	for _, consAddrStr := range optedIn {
+		moniker, ok := consAddrToMoniker[consAddrStr]
+		if !ok {
+			return nil, fmt.Errorf("failed to find moniker for consensus address %s", consAddrStr)
+		}
+		if moniker == "" {
+			return nil, fmt.Errorf("validator moniker is empty for consensus address %s", consAddrStr)
+		}
+		actualOptedInValidators = append(actualOptedInValidators, moniker)
+	}
+	
+	return actualOptedInValidators, nil
 }
 
 // handleConsensusKeyAssignment handles consensus key assignment events
