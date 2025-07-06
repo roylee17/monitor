@@ -87,54 +87,6 @@ func (ts *TxService) OptIn(ctx context.Context, consumerID string, consumerPubKe
 	return nil
 }
 
-// RemoveConsumer sends a remove-consumer transaction for a consumer chain
-// Only the owner of the chain can remove it
-func (ts *TxService) RemoveConsumer(ctx context.Context, consumerID string) error {
-	if ts.fromKey == "" {
-		return fmt.Errorf("no from key specified")
-	}
-
-	if ts.homeDir == "" {
-		return fmt.Errorf("no home directory specified")
-	}
-
-	if ts.nodeURL == "" {
-		return fmt.Errorf("no node URL specified")
-	}
-
-	if ts.chainID == "" {
-		return fmt.Errorf("no chain ID specified")
-	}
-
-	// Build the remove-consumer command
-	args := []string{
-		"tx", "provider", "remove-consumer", consumerID,
-		"--home", ts.homeDir+"/.provider",
-		"--chain-id", ts.chainID,
-		"--from", ts.fromKey,
-		"--keyring-backend", "test",
-		"--keyring-dir", ts.homeDir+"/.provider",
-		"--node", ts.nodeURL,
-		"--gas", "auto",
-		"--gas-adjustment", "1.5",
-		"--fees", "1000000stake",
-		"-o", "json", "-y",
-	}
-	
-	cmd := exec.CommandContext(ctx, "interchain-security-pd", args...)
-
-	// Execute the command
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to execute remove-consumer command: %w, output: %s", err, string(output))
-	}
-
-	// Log the output for debugging
-	fmt.Printf("Remove-consumer transaction output: %s\n", string(output))
-
-	return nil
-}
-
 // TxResult represents the result of a transaction
 type TxResult struct {
 	TxHash string

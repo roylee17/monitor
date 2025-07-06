@@ -1746,11 +1746,7 @@ func (h *ConsumerHandler) isLocalValidatorInInitialSet(ccvPatch map[string]inter
 	h.logger.Info("Provider key not found in initial set, checking for assigned consumer key")
 	
 	// Get local validator name
-	localValidatorName, err := h.validatorSelector.GetLocalValidatorMoniker()
-	if err != nil {
-		h.logger.Error("Failed to get local validator moniker", "error", err)
-		return &InitialSetKeyInfo{Found: false}, err
-	}
+	localValidatorName := h.validatorSelector.GetFromKey()
 	if localValidatorName == "" {
 		h.logger.Warn("Could not determine local validator name")
 		return &InitialSetKeyInfo{Found: false}, nil

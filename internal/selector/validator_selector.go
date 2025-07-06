@@ -348,24 +348,6 @@ func (vs *ValidatorSelector) getLocalAccountAddress() (string, error) {
 	return addr.String(), nil
 }
 
-// GetLocalValidatorMoniker gets the local validator's moniker
-// DEPRECATED: This method is unreliable as monikers are not unique
-func (vs *ValidatorSelector) GetLocalValidatorMoniker() (string, error) {
-	if vs.rpcClient == nil {
-		return "", fmt.Errorf("no RPC client available")
-	}
-
-	status, err := vs.rpcClient.Status(context.Background())
-	if err != nil {
-		return "", fmt.Errorf("failed to query node status: %w", err)
-	}
-
-	if status.ValidatorInfo.PubKey == nil {
-		return "", fmt.Errorf("node is not a validator")
-	}
-
-	return status.NodeInfo.Moniker, nil
-}
 
 // GetValidatorSubsetInfo returns formatted information about the validator subset
 func (vs *ValidatorSelector) GetValidatorSubsetInfo(result *SelectionResult) string {

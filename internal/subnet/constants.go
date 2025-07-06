@@ -61,6 +61,3 @@ const (
 	GenesisTimeBaseMonth = 1
 	GenesisTimeBaseDay   = 1
 )
-
-// Validator names for testing
-var TestValidatorNames = []string{"alice", "bob", "charlie"}
