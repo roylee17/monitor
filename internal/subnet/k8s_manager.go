@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"cosmossdk.io/math"
@@ -31,6 +32,10 @@ type K8sManager struct {
 	
 	// LoadBalancer management
 	lbManager *LoadBalancerManager
+	
+	// Goroutine management
+	tasks      map[string]context.CancelFunc
+	tasksMutex sync.Mutex
 }
 
 // NewK8sManager creates a new Kubernetes-aware subnet manager
@@ -52,12 +57,45 @@ func NewK8sManager(baseManager *Manager, logger *slog.Logger, consumerImage, val
 		defaultReplicas: 1,
 		validatorName:   validatorName,
 		lbManager:       lbManager,
+		tasks:           make(map[string]context.CancelFunc),
 	}, nil
 }
 
 // SetPeerDiscovery sets the peer discovery service
 func (m *K8sManager) SetPeerDiscovery(pd *PeerDiscovery) {
 	m.peerDiscovery = pd
+}
+
+// trackTask tracks a background task for proper cleanup
+func (m *K8sManager) trackTask(id string, cancel context.CancelFunc) {
+	m.tasksMutex.Lock()
+	defer m.tasksMutex.Unlock()
+	
+	// Cancel existing task if any
+	if existing, ok := m.tasks[id]; ok {
+		m.logger.Info("Cancelling existing task", "task_id", id)
+		existing()
+	}
+	
+	m.tasks[id] = cancel
+}
+
+// Close cancels all background tasks and cleans up resources
+func (m *K8sManager) Close() error {
+	m.tasksMutex.Lock()
+	defer m.tasksMutex.Unlock()
+	
+	m.logger.Info("Closing K8sManager, cancelling background tasks", "task_count", len(m.tasks))
+	
+	for id, cancel := range m.tasks {
+		m.logger.Debug("Cancelling task", "task_id", id)
+		cancel()
+	}
+	
+	// Clear the map
+	m.tasks = make(map[string]context.CancelFunc)
+	
+	return nil
 }
 
 // GetClientset returns the Kubernetes clientset from the deployer
@@ -382,7 +420,9 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		m.logger.Warn("Consumer pod still not ready after retries, LoadBalancer configuration deferred",
 			"chain_id", chainID)
 		// Start a goroutine to configure LoadBalancer later
-		go m.configureLoadBalancerWhenReady(ctx, chainID, namespace, ports.P2P)
+		taskCtx, cancel := context.WithCancel(context.Background())
+		m.trackTask(fmt.Sprintf("loadbalancer-%s", chainID), cancel)
+		go m.configureLoadBalancerWhenReady(taskCtx, chainID, namespace, ports.P2P)
 	} else {
 		// Configure LoadBalancer for this consumer chain
 		calculatedPort := ports.P2P
@@ -434,6 +474,16 @@ func (m *K8sManager) StopConsumerChain(ctx context.Context, chainID string) erro
 // RemoveConsumerChain removes all resources for a consumer chain
 func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) error {
 	m.logger.Info("Removing consumer chain", "chain_id", chainID)
+	
+	// Cancel any background tasks for this chain
+	m.tasksMutex.Lock()
+	taskID := fmt.Sprintf("loadbalancer-%s", chainID)
+	if cancel, ok := m.tasks[taskID]; ok {
+		m.logger.Info("Cancelling background task", "task_id", taskID)
+		cancel()
+		delete(m.tasks, taskID)
+	}
+	m.tasksMutex.Unlock()
 
 	// Calculate port to remove from LoadBalancer
 	ports, err := CalculatePorts(chainID)
