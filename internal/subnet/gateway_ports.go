@@ -3,6 +3,9 @@ package subnet
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
+	
+	"github.com/cosmos/interchain-security-monitor/internal/constants"
 )
 
 // Gateway port constants
@@ -13,7 +16,7 @@ const (
 
 // CalculateValidatorNodePort calculates a unique NodePort for a specific validator's consumer chain.
 // This ensures each validator gets different ports for the same consumer chain.
-func CalculateValidatorNodePort(chainID string, validatorName string) int32 {
+func CalculateValidatorNodePort(chainID string, validatorName string) (int32, error) {
 	// Combine chain ID and validator name for unique hash
 	combined := chainID + "-" + validatorName
 	hash := sha256.Sum256([]byte(combined))
@@ -25,5 +28,12 @@ func CalculateValidatorNodePort(chainID string, validatorName string) int32 {
 	// Use a larger range (30100-30399) for multi-validator setup
 	offset := hashNum % 300
 	
-	return int32(GatewayBaseNodePort + offset)
+	port := int32(GatewayBaseNodePort + offset)
+	
+	// Validate the port is within NodePort range
+	if port < int32(constants.MinNodePort) || port > int32(constants.MaxNodePort) {
+		return 0, fmt.Errorf("calculated NodePort %d is outside valid range (%d-%d)", port, constants.MinNodePort, constants.MaxNodePort)
+	}
+	
+	return port, nil
 }

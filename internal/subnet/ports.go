@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	
+	"github.com/cosmos/interchain-security-monitor/internal/constants"
 )
 
 // Port constants for deterministic allocation
@@ -72,8 +74,8 @@ func ValidatePorts(ports *Ports) error {
 	}
 	
 	for _, check := range portChecks {
-		if check.port < 1024 || check.port > 65535 {
-			return fmt.Errorf("%s port %d is out of valid range (1024-65535)", check.name, check.port)
+		if check.port < constants.MinUserPort || check.port > constants.MaxUserPort {
+			return fmt.Errorf("%s port %d is out of valid range (%d-%d)", check.name, check.port, constants.MinUserPort, constants.MaxUserPort)
 		}
 		
 		if reserved, service := IsPortReserved(check.port); reserved {

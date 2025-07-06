@@ -123,7 +123,9 @@ func (m *K8sManager) DeployConsumer(ctx context.Context, config *ConsumerDeploym
 	}
 
 	// Apply defaults
-	config.SetDefaults()
+	if err := config.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults: %w", err)
+	}
 
 	// Handle dynamic peers if requested
 	if config.UseDynamicPeers {
@@ -309,6 +311,13 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		m.logger.Warn("Failed to calculate hashes for deployment", "error", err)
 		subnetdHash, genesisHash = "unknown", "unknown"
 	}
+	
+	// Calculate validator NodePort
+	baseNodePort, err := CalculateValidatorNodePort(chainID, validatorName)
+	if err != nil {
+		deployErr.AddCriticalError(fmt.Errorf("failed to calculate NodePort: %w", err))
+		return deployErr
+	}
 
 	namespace := m.GetNamespaceForChain(chainID)
 	// Create deployment configuration with calculated ports
@@ -353,9 +362,9 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 			RPC  int
 			GRPC int
 		}{
-			P2P:  int(CalculateValidatorNodePort(chainID, validatorName)),
-			RPC:  int(CalculateValidatorNodePort(chainID, validatorName)) + 1,
-			GRPC: int(CalculateValidatorNodePort(chainID, validatorName)) + 2,
+			P2P:  int(baseNodePort),
+			RPC:  int(baseNodePort) + 1,
+			GRPC: int(baseNodePort) + 2,
 		},
 	}
 

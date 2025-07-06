@@ -41,14 +41,26 @@ func (c *ConsumerDeploymentConfig) Validate() error {
 	if c.ConsumerID == "" {
 		return fmt.Errorf("consumer ID is required")
 	}
+	
+	// Validate ports if provided
+	if c.Ports != nil {
+		if err := ValidatePorts(c.Ports); err != nil {
+			return fmt.Errorf("invalid port configuration: %w", err)
+		}
+	}
+	
 	return nil
 }
 
 // SetDefaults applies default values to optional fields
-func (c *ConsumerDeploymentConfig) SetDefaults() {
+func (c *ConsumerDeploymentConfig) SetDefaults() error {
 	if c.Ports == nil {
 		// Calculate default ports based on chain ID
-		ports, _ := CalculatePorts(c.ChainID)
+		ports, err := CalculatePorts(c.ChainID)
+		if err != nil {
+			return fmt.Errorf("failed to calculate default ports: %w", err)
+		}
 		c.Ports = ports
 	}
+	return nil
 }
