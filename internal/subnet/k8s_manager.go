@@ -13,6 +13,7 @@ import (
 	"cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/interchain-security-monitor/internal/deployment"
+	"github.com/cosmos/interchain-security-monitor/internal/retry"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -379,40 +380,40 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 	m.logger.Info("Waiting for consumer pod to be ready for LoadBalancer configuration",
 		"chain_id", chainID)
 	
-	// Retry for up to 60 seconds
-	maxRetries := 12
-	retryInterval := 5 * time.Second
-	var podIP string
+	// Use retry package for pod readiness check
+	retryConfig := retry.Config{
+		MaxAttempts:  12,
+		InitialDelay: 5 * time.Second,
+		MaxDelay:     30 * time.Second,
+		Multiplier:   1.0, // Keep constant delay for pod readiness
+	}
 	
-	for i := 0; i < maxRetries; i++ {
+	podIP, err := retry.DoWithResult(ctx, retryConfig, func() (string, error) {
 		// Get consumer chain status
 		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
 		if err != nil {
 			m.logger.Warn("Failed to get consumer chain status, will retry",
 				"chain_id", chainID,
-				"attempt", i+1,
 				"error", err)
-			time.Sleep(retryInterval)
-			continue
+			return "", err
 		}
 
 		// Look for a ready pod
 		for _, pod := range status.Pods {
 			if pod.Ready && pod.PodIP != "" {
-				podIP = pod.PodIP
-				break
+				return pod.PodIP, nil
 			}
 		}
 
-		if podIP != "" {
-			break
-		}
-
-		m.logger.Info("Consumer pod not ready yet, waiting...",
+		m.logger.Debug("Consumer pod not ready yet",
+			"chain_id", chainID)
+		return "", fmt.Errorf("no ready pods found")
+	})
+	
+	if err != nil {
+		m.logger.Warn("Failed to get pod IP after retries",
 			"chain_id", chainID,
-			"attempt", i+1,
-			"max_attempts", maxRetries)
-		time.Sleep(retryInterval)
+			"error", err)
 	}
 
 	if podIP == "" {
@@ -677,29 +678,22 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 	m.logger.Info("Starting background LoadBalancer configuration task",
 		"chain_id", chainID)
 	
-	// Continue retrying for up to 5 minutes
-	maxRetries := 60
-	retryInterval := 5 * time.Second
+	// Retry configuration for background task
+	retryConfig := retry.Config{
+		MaxAttempts:  60,
+		InitialDelay: 5 * time.Second,
+		MaxDelay:     30 * time.Second,
+		Multiplier:   1.0, // Keep constant delay for background checks
+	}
 	
-	for i := 0; i < maxRetries; i++ {
-		// Check if context is cancelled
-		select {
-		case <-ctx.Done():
-			m.logger.Info("LoadBalancer configuration cancelled",
-				"chain_id", chainID)
-			return
-		default:
-		}
-		
+	err := retry.Do(ctx, retryConfig, func() error {
 		// Get consumer chain status
 		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
 		if err != nil {
 			m.logger.Warn("Failed to get consumer chain status in background task",
 				"chain_id", chainID,
-				"attempt", i+1,
 				"error", err)
-			time.Sleep(retryInterval)
-			continue
+			return err
 		}
 		
 		// Look for a ready pod
@@ -711,35 +705,45 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 			}
 		}
 		
-		if podIP != "" {
-			// Configure LoadBalancer
-			if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(p2pPort)); err != nil {
-				m.logger.Error("Failed to add port to LoadBalancer in background task",
-					"chain_id", chainID,
-					"port", p2pPort,
-					"error", err)
-			} else {
-				// Create EndpointSlice for LoadBalancer routing (using modern API)
-				if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(p2pPort)); err != nil {
-					m.logger.Error("Failed to create EndpointSlice in background task",
-						"chain_id", chainID,
-						"error", err)
-				} else {
-					m.logger.Info("LoadBalancer configured successfully in background task",
-						"chain_id", chainID,
-						"port", p2pPort,
-						"pod_ip", podIP,
-						"attempt", i+1)
-				}
-			}
-			return
+		if podIP == "" {
+			return fmt.Errorf("no ready pods found")
 		}
 		
-		time.Sleep(retryInterval)
-	}
+		// Configure LoadBalancer
+		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(p2pPort)); err != nil {
+			m.logger.Error("Failed to add port to LoadBalancer",
+				"chain_id", chainID,
+				"port", p2pPort,
+				"error", err)
+			// Don't retry on LoadBalancer errors
+			return nil
+		}
+		
+		// Create EndpointSlice for LoadBalancer routing (using modern API)
+		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(p2pPort)); err != nil {
+			m.logger.Error("Failed to create EndpointSlice",
+				"chain_id", chainID,
+				"error", err)
+			// Don't retry on EndpointSlice errors
+			return nil
+		}
+		
+		m.logger.Info("LoadBalancer configured successfully in background task",
+			"chain_id", chainID,
+			"port", p2pPort,
+			"pod_ip", podIP)
+		return nil
+	})
 	
-	m.logger.Error("Failed to configure LoadBalancer after all retries",
-		"chain_id", chainID,
-		"max_retries", maxRetries)
+	if err != nil {
+		if ctx.Err() != nil {
+			m.logger.Info("LoadBalancer configuration cancelled",
+				"chain_id", chainID)
+		} else {
+			m.logger.Error("Failed to configure LoadBalancer after all retries",
+				"chain_id", chainID,
+				"error", err)
+		}
+	}
 }
 
