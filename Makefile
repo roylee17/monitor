@@ -29,7 +29,7 @@ VALIDATOR_COUNT := 3
 # ============================================
 # Phony targets
 # ============================================
-.PHONY: help clean clean-consumers clean-assets
+.PHONY: help clean clean-consumers clean-assets quick-start
 .PHONY: docker-build docker-build-dev
 .PHONY: generate-testnet create-clusters delete-clusters deploy reset deploy-dev reset-dev register-endpoints
 .PHONY: status status-verbose logs shell
@@ -44,6 +44,7 @@ help: ## Show this help message
 	@echo "======================================"
 	@echo ""
 	@echo "Quick Start:"
+	@echo "  make quick-start         # Complete setup with consumer chain (5 mins)"
 	@echo "  make deploy              # Full deployment: create clusters, build, and deploy"
 	@echo "  make status              # Check deployment status"
 	@echo "  make create-consumer     # Create a test consumer chain"
@@ -142,6 +143,28 @@ reset-dev: ## Fast reset for development (reuses docker cache)
 	@$(MAKE) -s delete-clusters
 	@$(MAKE) -s clean-assets
 	@$(MAKE) -s deploy-dev
+
+quick-start: deploy ## Complete setup with consumer chain (automated flow)
+	@echo "🚀 Running quick start flow..."
+	@echo ""
+	@echo "⏳ Waiting for pods to stabilize (30s)..."
+	@sleep 30
+	@echo ""
+	@echo "📦 Installing MetalLB for LoadBalancer support..."
+	@$(SCRIPTS_DIR)/clusters/install-metallb.sh
+	@echo ""
+	@echo "📝 Registering validator endpoints..."
+	@$(SCRIPTS_DIR)/testnet/register-validator-endpoints.sh
+	@echo ""
+	@echo "🌟 Creating consumer chain..."
+	@$(SCRIPTS_DIR)/lifecycle/create-consumer.sh -s 10
+	@echo ""
+	@echo "⏳ Waiting for consumer chain to launch (20s)..."
+	@sleep 20
+	@echo ""
+	@echo "✅ Quick start complete! Checking consumer status..."
+	@echo ""
+	@$(MAKE) -s consumer-info CONSUMER_ID=0
 
 # ============================================
 # Status and monitoring

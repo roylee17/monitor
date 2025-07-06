@@ -2,6 +2,36 @@
 
 An orchestration layer for Cosmos Interchain Security that automates validator operations and consumer chain deployments using a stateless, decentralized architecture.
 
+## 🚀 Quick Start
+
+Get a testnet running with consumer chains in under 5 minutes:
+
+```bash
+# One command to set up everything
+make quick-start
+```
+
+Or step by step:
+
+```bash
+# 1. Deploy testnet (3 validators with monitors)
+make deploy
+
+# 2. Install LoadBalancer support
+./scripts/clusters/install-metallb.sh
+
+# 3. Register validator endpoints
+make register-endpoints
+
+# 4. Create a consumer chain
+make create-consumer
+
+# 5. Check consumer chain status
+make consumer-info CONSUMER_ID=0
+```
+
+📖 See the [Quick Start Guide](docs/quick-start.md) for detailed instructions.
+
 ## Overview
 
 The Interchain Security Monitor acts as an autonomous orchestrator that:
