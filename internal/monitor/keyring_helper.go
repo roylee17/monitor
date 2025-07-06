@@ -2,8 +2,6 @@ package monitor
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
@@ -72,19 +70,3 @@ type ValidatorIdentity struct {
 	KeyType        string
 }
 
-// Alternative: GetAddressFromCLI uses CLI as fallback for getting address
-func GetAddressFromCLI(homeDir, keyName string) (string, error) {
-	// Use interchain-security-pd to get address
-	cmd := exec.Command("interchain-security-pd", 
-		"keys", "show", keyName,
-		"--keyring-backend", "test",
-		"--home", homeDir,
-		"-a")
-	
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get address from CLI: %w", err)
-	}
-	
-	return strings.TrimSpace(string(output)), nil
-}

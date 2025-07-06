@@ -2,7 +2,6 @@ package subnet
 
 import (
 	"fmt"
-	"log/slog"
 )
 
 // ConsumerKeyInfo holds assigned consumer key information
@@ -32,15 +31,6 @@ type ConsumerDeploymentConfig struct {
 	
 	// Advanced options
 	UseDynamicPeers bool
-}
-
-// K8sManagerConfig contains configuration for creating a K8sManager
-type K8sManagerConfig struct {
-	BaseManager     *Manager
-	Logger          *slog.Logger
-	NamespacePrefix string
-	ConsumerImage   string
-	ValidatorName   string
 }
 
 // Validate checks if the configuration is valid

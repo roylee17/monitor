@@ -33,9 +33,8 @@ const (
 	ConsumerBinaryPath = "/usr/local/bin/interchain-security-cd"
 
 	// Genesis file paths
-	PreGenesisFile = "config/priv_validator_state.json"
-	GenesisFile    = "config/genesis.json"
-	NodeKeyFile    = "config/node_key.json"
+	GenesisFile = "config/genesis.json"
+	NodeKeyFile = "config/node_key.json"
 
 	// Default namespace prefix
 	DefaultNamespacePrefix = "consumer"
@@ -53,8 +52,7 @@ const (
 	LabelManagedByMonitor     = "ics-monitor"
 
 	// Peer discovery
-	ServiceDNSFormat = "%s.%s.svc.cluster.local" // service.namespace.svc.cluster.local
-	NodeIDPrefix     = "ics-consumer"
+	NodeIDPrefix = "ics-consumer"
 
 	// Genesis time base
 	GenesisTimeBaseYear  = 2025

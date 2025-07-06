@@ -87,8 +87,8 @@ func (m *K8sManager) DeployConsumer(ctx context.Context, config *ConsumerDeploym
 
 	// Handle dynamic peers if requested
 	if config.UseDynamicPeers {
-		return m.DeployConsumerWithDynamicPeersAndKey(ctx, config.ChainID, config.ConsumerID,
-			*config.Ports, config.CCVPatch, config.ConsumerKey)
+		return m.DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx, config.ChainID, config.ConsumerID,
+			*config.Ports, config.CCVPatch, config.ConsumerKey, nil)
 	}
 
 	// Use the existing implementation
@@ -380,32 +380,6 @@ func (m *K8sManager) JoinSubnetWithK8s(ctx context.Context, chainID string, netw
 	return nil
 }
 
-// DeployConsumerWithPorts deploys consumer chain with specific ports
-// DeployConsumerWithPorts deploys a consumer chain with specific port configuration
-// Deprecated: Use DeployConsumerWithPortsAndGenesis instead
-func (m *K8sManager) DeployConsumerWithPorts(ctx context.Context, chainID, consumerID string, ports Ports, peers []string) error {
-	return m.DeployConsumerWithPortsAndGenesis(ctx, chainID, consumerID, ports, peers, nil)
-}
-
-// DeployConsumerWithPortsAndGenesis deploys a consumer chain with specific port configuration and CCV genesis
-func (m *K8sManager) DeployConsumerWithPortsAndGenesis(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}) error {
-	return m.DeployConsumerWithPortsAndGenesisForValidator(ctx, chainID, consumerID, "", ports, peers, ccvPatch)
-}
-
-// DeployConsumerWithPortsAndGenesisAndNodeKey deploys a consumer chain with specific port configuration, CCV genesis, and node key
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndNodeKey(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
-	return m.DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx, chainID, consumerID, "", ports, peers, ccvPatch, nodeKeyJSON)
-}
-
-// DeployConsumerWithPortsAndGenesisForValidator deploys a consumer chain instance for a specific validator
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidator(ctx context.Context, chainID, consumerID, validatorName string, ports Ports, peers []string, ccvPatch map[string]interface{}) error {
-	return m.DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx, chainID, consumerID, validatorName, ports, peers, ccvPatch, "")
-}
-
-// DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey deploys a consumer chain instance with all options
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisForValidatorWithNodeKey(ctx context.Context, chainID, consumerID, validatorName string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string) error {
-	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON, nil)
-}
 
 // DeployConsumerWithPortsAndGenesisAndKeys deploys a consumer chain instance with all options including consumer key
 func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndKeys(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
@@ -740,15 +714,6 @@ func (m *K8sManager) waitForDeploymentReady(ctx context.Context, chainID string)
 	}
 }
 
-// DeployConsumerWithDynamicPeers deploys a consumer chain with dynamically discovered peers
-func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}) error {
-	return m.DeployConsumerWithDynamicPeersAndKey(ctx, chainID, consumerID, ports, ccvPatch, nil)
-}
-
-// DeployConsumerWithDynamicPeersAndKey deploys a consumer chain with dynamically discovered peers and optional consumer key
-func (m *K8sManager) DeployConsumerWithDynamicPeersAndKey(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo) error {
-	return m.DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx, chainID, consumerID, ports, ccvPatch, consumerKey, nil)
-}
 
 // DeployConsumerWithDynamicPeersAndKeyAndValidators deploys a consumer chain with dynamically discovered peers, optional consumer key, and explicit validator list
 func (m *K8sManager) DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo, actualOptedInValidators []string) error {

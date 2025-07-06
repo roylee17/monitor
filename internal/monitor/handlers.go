@@ -294,7 +294,6 @@ type ConsumerHandler struct {
 	txService         transaction.Service
 	rpcClient         *rpcclient.HTTP
 	clientCtx         client.Context
-	genesisFetcher    *GenesisFetcher        // Reliable genesis fetching
 	healthMonitor     *HealthMonitor         // Consumer chain health monitoring
 
 	// Validator mappings for dynamic lookup
@@ -354,7 +353,6 @@ func NewConsumerHandlerWithK8s(logger *slog.Logger, validatorSelector *selector.
 		txService:              txService,
 		rpcClient:              rpcClient,
 		clientCtx:              clientCtx,
-		genesisFetcher:         NewGenesisFetcher(logger, clientCtx),
 		healthMonitor:          NewHealthMonitor(logger, k8sManager),
 		blockchainState:        blockchainState,
 		consumerKeyStore:       consumerKeyStore,
