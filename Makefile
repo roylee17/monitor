@@ -144,26 +144,21 @@ reset-dev: ## Fast reset for development (reuses docker cache)
 	@$(MAKE) -s clean-assets
 	@$(MAKE) -s deploy-dev
 
-quick-start: deploy ## Complete setup with consumer chain (automated flow)
-	@echo "🚀 Running quick start flow..."
-	@echo ""
-	@echo "⏳ Waiting for pods to stabilize (30s)..."
-	@sleep 30
-	@echo ""
+deploy-metallb:
 	@echo "📦 Installing MetalLB for LoadBalancer support..."
 	@$(SCRIPTS_DIR)/clusters/install-metallb.sh
-	@echo ""
-	@echo "📝 Registering validator endpoints..."
-	@$(SCRIPTS_DIR)/testnet/register-validator-endpoints.sh
-	@echo ""
-	@echo "🌟 Creating consumer chain..."
-	@$(SCRIPTS_DIR)/lifecycle/create-consumer.sh -s 10
-	@echo ""
+
+quick-start: ## Complete setup with consumer chain (automated flow)
+	@$(MAKE) -s deploy
+	@$(MAKE) -s deploy-metallb
+	@$(MAKE) -s register-endpoints
+	@$(MAKE) -s create-consumer
+	@echo "⏳ Show on-chain consumer status..."
+	@$(MAKE) -s show-consumer CONSUMER_ID=0
 	@echo "⏳ Waiting for consumer chain to launch (20s)..."
+
 	@sleep 20
-	@echo ""
-	@echo "✅ Quick start complete! Checking consumer status..."
-	@echo ""
+	@echo "✅ Quick start complete! Checking runtime consumer chain status..."
 	@$(MAKE) -s consumer-info CONSUMER_ID=0
 
 # ============================================

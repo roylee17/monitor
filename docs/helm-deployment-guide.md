@@ -5,6 +5,7 @@ This guide explains how to deploy ICS validators using the new Helm-based system
 ## Overview
 
 The project now uses a unified Helm chart (`helm/ics-validator`) for all deployments:
+
 - **Single validators** use it to deploy their infrastructure
 - **Testnet** uses it 3 times with different configurations
 

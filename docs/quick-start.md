@@ -2,17 +2,14 @@
 
 This guide walks you through setting up a testnet, creating a consumer chain, and verifying it's working correctly.
 
-## The Fastest Way
-
-Want to see everything working in one command?
-
 ```bash
 make quick-start
 ```
 
 This will:
+
 1. Deploy a 3-validator testnet
-2. Install MetalLB for LoadBalancer support
+2. Install MetalLB for as a Kubernetes LoadBalancer
 3. Register validator endpoints
 4. Create a consumer chain
 5. Wait for it to start producing blocks
@@ -150,7 +147,7 @@ Consumer Chain 0
 ----------------------------------------
   Chain ID             : consumer-0-1234567890-0
   Phase                : CONSUMER_PHASE_LAUNCHED
-  
+
 Opted-in validators:
   • cosmosvalcons1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   • cosmosvalcons1yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
@@ -223,7 +220,7 @@ make remove-consumer CONSUMER_ID=0  # Remove consumer chain
 
 ```bash
 make logs TARGET=monitor-alice      # Monitor logs
-make logs TARGET=validator-bob      # Validator logs  
+make logs TARGET=validator-bob      # Validator logs
 make consumer-logs CONSUMER_ID=0    # Consumer chain logs
 make shell TARGET=alice             # Shell into validator
 ```
@@ -251,26 +248,3 @@ make clean              # Clean everything
    ```bash
    kubectl --context kind-alice-cluster get svc -n metallb-system
    ```
-
-3. Check monitor logs for errors:
-
-   ```bash
-   make logs TARGET=monitor-alice
-   ```
-
-### Pods Not Starting?
-
-Check cluster resources:
-
-```bash
-docker stats --no-stream
-```
-
-Ensure Docker has at least 8GB RAM allocated.
-
-## Next Steps
-
-- Try creating multiple consumer chains
-- Experiment with different spawn times
-- Read the [Architecture Overview](architecture/overview.md)
-- Learn about [Consumer Chain Lifecycle](architecture/consumer-lifecycle.md)
