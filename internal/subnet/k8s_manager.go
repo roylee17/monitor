@@ -87,42 +87,15 @@ func (m *K8sManager) DeployConsumer(ctx context.Context, config *ConsumerDeploym
 
 	// Handle dynamic peers if requested
 	if config.UseDynamicPeers {
-		return m.DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx, config.ChainID, config.ConsumerID,
+		return m.DeployConsumerWithDynamicPeers(ctx, config.ChainID, config.ConsumerID,
 			*config.Ports, config.CCVPatch, config.ConsumerKey, nil)
 	}
 
 	// Use the existing implementation
-	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, config.ChainID, config.ConsumerID,
+	return m.deployConsumerFull(ctx, config.ChainID, config.ConsumerID,
 		*config.Ports, config.Peers, config.CCVPatch, config.NodeKeyJSON, config.ConsumerKey)
 }
 
-// DeployConsumerChain orchestrates the full consumer chain deployment workflow
-// Deprecated: Use DeployConsumer with ConsumerDeploymentConfig instead
-func (m *K8sManager) DeployConsumerChain(ctx context.Context, chainID, consumerID string) error {
-	m.logger.Info("Starting consumer chain deployment workflow",
-		"chain_id", chainID,
-		"consumer_id", consumerID)
-
-	// Phase 1: Pre-CCV Genesis Preparation
-	if err := m.preparePreCCVGenesis(chainID); err != nil {
-		return fmt.Errorf("failed to prepare pre-CCV genesis: %w", err)
-	}
-
-	// Phase 2: Genesis Patching (will be done when CCV data is available)
-	// This is handled later in the workflow when the provider chain provides CCV data
-
-	// Phase 3: Kubernetes Deployment
-	if err := m.deployToKubernetes(ctx, chainID, consumerID); err != nil {
-		return fmt.Errorf("failed to deploy to Kubernetes: %w", err)
-	}
-
-	namespace := m.GetNamespaceForChain(chainID)
-	m.logger.Info("Consumer chain deployment workflow completed",
-		"chain_id", chainID,
-		"namespace", namespace)
-
-	return nil
-}
 
 // PrepareConsumerGenesis prepares the consumer genesis without deploying
 func (m *K8sManager) PrepareConsumerGenesis(ctx context.Context, chainID, consumerID string) error {
@@ -174,58 +147,6 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 	return nil
 }
 
-// deployToKubernetes handles the Kubernetes deployment phase
-func (m *K8sManager) deployToKubernetes(ctx context.Context, chainID, consumerID string) error {
-	namespace := m.GetNamespaceForChain(chainID)
-	m.logger.Info("Deploying consumer chain to Kubernetes",
-		"chain_id", chainID,
-		"namespace", namespace)
-
-	// Calculate hashes for deployment metadata
-	subnetdHash, genesisHash, err := m.Manager.CalculateHashes()
-	if err != nil {
-		// Don't fail deployment for hash calculation issues
-		m.logger.Warn("Failed to calculate hashes for deployment", "error", err)
-		subnetdHash, genesisHash = "unknown", "unknown"
-	}
-
-	// Create deployment configuration
-	deploymentConfig := deployment.ConsumerDeployment{
-		ChainID:     chainID,
-		ConsumerID:  consumerID,
-		Image:       m.consumerImage,
-		Namespace:   namespace,
-		Replicas:    m.defaultReplicas,
-		GenesisHash: genesisHash,
-		SubnetdHash: subnetdHash,
-
-		// Standard port configuration
-		P2PPort:  26656,
-		RPCPort:  26657,
-		RESTPort: 1317,
-		GRPCPort: 9090,
-
-		// Consumer chain configuration
-		ConsumerConfig: deployment.ConsumerChainConfig{
-			UnbondingPeriod:       "1728000s", // 20 days
-			CCVTimeoutPeriod:      "2419200s", // 28 days
-			TransferTimeout:       "1800s",    // 30 minutes
-			BlocksPerTransmission: 1000,
-			RedistributionFrac:    "0.75",
-		},
-	}
-
-	// Deploy to Kubernetes
-	if err := m.deployer.DeployConsumerChain(ctx, deploymentConfig); err != nil {
-		return fmt.Errorf("failed to deploy consumer chain: %w", err)
-	}
-
-	m.logger.Info("Consumer chain deployed to Kubernetes successfully",
-		"chain_id", chainID,
-		"namespace", namespace)
-
-	return nil
-}
 
 // ApplyCCVGenesisAndRedeploy applies CCV genesis patch and redeploys the consumer chain
 func (m *K8sManager) ApplyCCVGenesisAndRedeploy(ctx context.Context, chainID string, ccvPatch map[string]interface{}) error {
@@ -316,73 +237,10 @@ func (m *K8sManager) MonitorConsumerChainHealth(ctx context.Context, chainID str
 	}
 }
 
-// Enhanced workflow methods that integrate with the existing manager
-
-// StartSubnetWithK8s starts a subnet using the Kubernetes deployment approach
-func (m *K8sManager) StartSubnetWithK8s(ctx context.Context, chainID string) error {
-	m.logger.Info("Starting subnet with Kubernetes deployment", "chain_id", chainID)
-
-	// For Kubernetes deployment, the actual "start" happens when the deployment is created
-	// We can verify that the deployment is running and healthy
-	status, err := m.GetConsumerChainStatus(ctx, chainID)
-	if err != nil {
-		return fmt.Errorf("failed to get consumer chain status: %w", err)
-	}
-
-	if status.ReadyReplicas == 0 {
-		return fmt.Errorf("consumer chain deployment is not ready: %d/%d replicas ready",
-			status.ReadyReplicas, status.DesiredReplicas)
-	}
-
-	m.logger.Info("Subnet started successfully in Kubernetes",
-		"chain_id", chainID,
-		"ready_replicas", status.ReadyReplicas)
-
-	return nil
-}
-
-// JoinSubnetWithK8s joins an existing subnet using Kubernetes deployment
-func (m *K8sManager) JoinSubnetWithK8s(ctx context.Context, chainID string, networkInfo NetworkInfo) error {
-	m.logger.Info("Joining subnet with Kubernetes deployment",
-		"chain_id", chainID)
-
-	namespace := m.GetNamespaceForChain(chainID)
-	// Deploy consumer chain
-	deploymentConfig := deployment.ConsumerDeployment{
-		ChainID:    chainID,
-		ConsumerID: "", // Will be set from context
-		Image:      m.consumerImage,
-		Namespace:  namespace,
-		Replicas:   m.defaultReplicas,
-
-		// Standard port configuration
-		P2PPort:  26656,
-		RPCPort:  26657,
-		RESTPort: 1317,
-
-		// Consumer chain configuration
-		ConsumerConfig: deployment.ConsumerChainConfig{
-			UnbondingPeriod:       "1728000s",
-			CCVTimeoutPeriod:      "2419200s",
-			TransferTimeout:       "1800s",
-			BlocksPerTransmission: 1000,
-			RedistributionFrac:    "0.75",
-		},
-	}
-
-	// Deploy to Kubernetes
-	if err := m.deployer.DeployConsumerChain(ctx, deploymentConfig); err != nil {
-		return fmt.Errorf("failed to deploy consumer chain: %w", err)
-	}
-
-	m.logger.Info("Successfully joined subnet with Kubernetes deployment", "chain_id", chainID)
-
-	return nil
-}
 
 
-// DeployConsumerWithPortsAndGenesisAndKeys deploys a consumer chain instance with all options including consumer key
-func (m *K8sManager) DeployConsumerWithPortsAndGenesisAndKeys(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
+// deployConsumerFull deploys a consumer chain instance with all options including consumer key
+func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
 	// Determine validator name from consumer key or environment
 	validatorName := ""
 	if consumerKey != nil {
@@ -618,32 +476,6 @@ func (m *K8sManager) ConsumerDeploymentExists(ctx context.Context, chainID strin
 	return m.deployer.DeploymentExistsInNamespace(ctx, chainID, namespace)
 }
 
-// GetNetworkInfoFromK8s gets network info from the Kubernetes deployment
-func (m *K8sManager) GetNetworkInfoFromK8s(ctx context.Context, chainID string) (NetworkInfo, error) {
-	status, err := m.GetConsumerChainStatus(ctx, chainID)
-	if err != nil {
-		return NetworkInfo{}, fmt.Errorf("failed to get consumer chain status: %w", err)
-	}
-
-	if len(status.Pods) == 0 {
-		return NetworkInfo{}, fmt.Errorf("no pods found for consumer chain %s", chainID)
-	}
-
-	// Get network info from the first ready pod
-	for _, pod := range status.Pods {
-		if pod.Ready {
-			networkInfo := NetworkInfo{
-				P2PAddress: fmt.Sprintf("tcp://%s:26656", pod.PodIP),
-				RPCAddress: fmt.Sprintf("tcp://%s:26657", pod.PodIP),
-				Peers:      []string{}, // Will be populated from actual P2P discovery
-			}
-
-			return networkInfo, nil
-		}
-	}
-
-	return NetworkInfo{}, fmt.Errorf("no ready pods found for consumer chain %s", chainID)
-}
 
 // updateConsumerGenesisConfigMap updates the ConfigMap with CCV genesis patch
 func (m *K8sManager) updateConsumerGenesisConfigMap(ctx context.Context, chainID string, ccvPatch map[string]interface{}) error {
@@ -715,8 +547,8 @@ func (m *K8sManager) waitForDeploymentReady(ctx context.Context, chainID string)
 }
 
 
-// DeployConsumerWithDynamicPeersAndKeyAndValidators deploys a consumer chain with dynamically discovered peers, optional consumer key, and explicit validator list
-func (m *K8sManager) DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo, actualOptedInValidators []string) error {
+// DeployConsumerWithDynamicPeers deploys a consumer chain with dynamically discovered peers
+func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo, actualOptedInValidators []string) error {
 	m.logger.Info("Deploying consumer with dynamic peer discovery",
 		"chain_id", chainID,
 		"consumer_id", consumerID)
@@ -781,7 +613,7 @@ func (m *K8sManager) DeployConsumerWithDynamicPeersAndKeyAndValidators(ctx conte
 	}
 
 	// Deploy with discovered peers, node key, and consumer key
-	return m.DeployConsumerWithPortsAndGenesisAndKeys(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON, consumerKey)
+	return m.deployConsumerFull(ctx, chainID, consumerID, ports, peers, ccvPatch, nodeKeyJSON, consumerKey)
 }
 
 // EnsureLoadBalancerReady checks if the shared LoadBalancer is ready and returns its endpoint

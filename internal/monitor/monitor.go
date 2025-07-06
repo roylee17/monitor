@@ -95,10 +95,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	
 	// Setup peer discovery
 	peerDiscovery := subnet.NewPeerDiscovery(logger, cfg.FromKey)
-	
-	// Set RPC client for peer discovery to query provider network info
-	peerDiscovery.SetRPCClient(rpcClient)
-	logger.Info("Peer discovery configured with provider RPC client")
+	logger.Info("Peer discovery configured for LoadBalancer-based discovery")
 	
 	// Query validator endpoints from chain registry
 	validatorRegistry := NewValidatorRegistry(logger)
@@ -124,8 +121,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	// In multi-cluster setup, each validator runs in its own cluster
 	// and peer discovery relies on the on-chain validator registry
 	if os.Getenv("MULTI_CLUSTER_MODE") == "true" {
-		logger.Info("Multi-cluster mode enabled - using on-chain validator registry for peer discovery")
-		peerDiscovery.SetGatewayMode(true) // This enables NodePort-based discovery
+		logger.Info("Multi-cluster mode enabled - using LoadBalancer-based discovery")
 	}
 	
 	k8sManager.SetPeerDiscovery(peerDiscovery)

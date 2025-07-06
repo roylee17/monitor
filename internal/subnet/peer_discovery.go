@@ -25,12 +25,6 @@ func NewPeerDiscovery(logger *slog.Logger, localValidatorMoniker string) *PeerDi
 	}
 }
 
-// SetRPCClient is deprecated - no longer needed for LoadBalancer-based discovery
-// Kept for backward compatibility
-func (d *PeerDiscovery) SetRPCClient(client interface{}) {
-	// No-op: LoadBalancer discovery doesn't need RPC client
-	d.logger.Debug("SetRPCClient called but ignored - LoadBalancer discovery doesn't use RPC")
-}
 
 // SetValidatorEndpoints sets the validator P2P endpoints from chain registry
 func (d *PeerDiscovery) SetValidatorEndpoints(endpoints map[string]string) {
@@ -65,16 +59,10 @@ func (d *PeerDiscovery) GetNodeKeyJSON(chainID string) ([]byte, error) {
 	return d.nodeKeyGen.GenerateNodeKeyJSON(d.localValidatorMoniker, chainID)
 }
 
-// SetGatewayMode is deprecated - LoadBalancer mode is always used
-// Kept for backward compatibility
-func (d *PeerDiscovery) SetGatewayMode(enabled bool) {
-	// No-op: LoadBalancer mode is always enabled
-	d.logger.Debug("SetGatewayMode called but ignored - LoadBalancer mode is always used")
-}
 
 
 // discoverPeersWithLoadBalancer discovers peers for a consumer chain using LoadBalancer addresses
-func (d *PeerDiscovery) discoverPeersWithLoadBalancer(ctx context.Context, consumerID string, chainID string, optedInValidators []string) ([]string, error) {
+func (d *PeerDiscovery) discoverPeersWithLoadBalancer(_ context.Context, consumerID string, chainID string, optedInValidators []string) ([]string, error) {
 	d.logger.Info("Discovering peers through LoadBalancer",
 		"consumer_id", consumerID,
 		"chain_id", chainID,
