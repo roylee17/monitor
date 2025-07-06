@@ -1368,7 +1368,7 @@ func (h *ConsumerHandler) handleLaunchedPhase(ctx context.Context, consumerID, c
 
 	// Deploy the consumer chain
 	if err := h.k8sManager.DeployConsumerWithDynamicPeers(
-		context.Background(), chainID, consumerID, *ports,
+		ctx, chainID, consumerID, *ports,
 		consumerCtx.CCVPatch, consumerKey, actualOptedInValidators); err != nil {
 		h.logger.Error("Failed to deploy consumer chain", "error", err, "has_key", consumerKey != nil)
 		return err
