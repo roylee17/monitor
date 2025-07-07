@@ -89,6 +89,17 @@ query_opted_in_validators() {
         --home /chain/.provider 2>/dev/null
 }
 
+# Get initial validator set for a launched consumer chain
+query_initial_validator_set() {
+    local consumer_id="$1"
+    local pod="$2"
+    local namespace="${3:-$DEFAULT_NAMESPACE}"
+    
+    exec_on_validator "$pod" "$namespace" \
+        interchain-security-pd query provider consumer-validators "${consumer_id}" \
+        --home /chain/.provider 2>/dev/null
+}
+
 # ============================================
 # Transaction Functions
 # ============================================
@@ -270,13 +281,28 @@ display_consumer_details() {
     local namespace="${3:-$DEFAULT_NAMESPACE}"
     
     if [ "${RAW_OUTPUT}" = "true" ]; then
-        # In raw mode, output enriched JSON with opted-in validators
-        local consumer_id validators
+        # In raw mode, output enriched JSON with opted-in validators and initial validator set
+        local consumer_id validators initial_vals phase
         consumer_id=$(echo "$consumer_info" | jq -r '.consumer_id // "N/A"')
+        phase=$(echo "$consumer_info" | jq -r '.phase // "N/A"')
         validators=$(RAW_OUTPUT=true query_opted_in_validators "$consumer_id" "$pod" "$namespace" 2>/dev/null | grep -v "^validators:" | grep -E "^\s*-" | sed 's/^- //' | jq -R -s -c 'split("\n") | map(select(length > 0))')
         
+        # Get initial validator set if chain is launched
+        if [ "$phase" = "CONSUMER_PHASE_LAUNCHED" ]; then
+            # Query and parse initial validator set into JSON
+            initial_vals=$(query_initial_validator_set "$consumer_id" "$pod" "$namespace" 2>/dev/null | \
+                awk 'BEGIN {print "["} 
+                     /^- address:/ {if (NR>1) print ","; printf "{\"address\":\"%s\"", $3}
+                     /power:/ {printf ",\"power\":\"%s\"", $2}
+                     /pub_key:/ {gsub(/pub_key:/, ""); gsub(/^[[:space:]]+/, ""); printf ",\"pub_key\":%s}", $0}
+                     END {print "]"}' | jq -c '.')
+        else
+            initial_vals="[]"
+        fi
+        
         # Add validators to the consumer info
-        echo "$consumer_info" | jq --argjson validators "$validators" '. + {opted_in_validators: $validators}'
+        echo "$consumer_info" | jq --argjson validators "$validators" --argjson initial_vals "$initial_vals" \
+            '. + {opted_in_validators: $validators, initial_validator_set: $initial_vals}'
         return
     fi
     
@@ -330,6 +356,81 @@ display_consumer_details() {
         done
     else
         print_item "None"
+    fi
+    
+    # Show initial validator set (for launched chains)
+    if [ "$phase" = "CONSUMER_PHASE_LAUNCHED" ]; then
+        echo ""
+        echo "Initial validator set:"
+        local initial_validators
+        initial_validators=$(query_initial_validator_set "$consumer_id" "$pod" "$namespace" 2>/dev/null)
+        if [ -n "$initial_validators" ] && [ "$initial_validators" != "validators: []" ]; then
+            # Parse validator entries - format from consumer-validators query:
+            # validators:
+            # - consumer_commission_rate: "0.100000000000000000"
+            #   consumer_key: ...
+            #   consumer_power: "30000000000000"
+            #   provider_address: cosmosvalcons...
+            #   provider_power: "30000000000000"
+            #   moniker: alice
+            
+            local current_address=""
+            local current_power=""
+            local current_moniker=""
+            local in_validator=false
+            
+            echo "$initial_validators" | while IFS= read -r line; do
+                if [[ "$line" =~ ^-[[:space:]] ]]; then
+                    # Start of new validator entry
+                    if [ -n "$current_address" ] && [ -n "$current_power" ]; then
+                        # Output previous validator
+                        if [ -n "$current_moniker" ]; then
+                            printf "  • %s - %s (power: %s)\n" "$current_moniker" "$current_address" "$current_power"
+                        else
+                            printf "  • %s (power: %s)\n" "$current_address" "$current_power"
+                        fi
+                    fi
+                    current_address=""
+                    current_power=""
+                    current_moniker=""
+                    in_validator=true
+                elif [ "$in_validator" = true ]; then
+                    if [[ "$line" =~ ^[[:space:]]+provider_address: ]]; then
+                        current_address=$(echo "$line" | sed 's/^[[:space:]]*provider_address: //')
+                    elif [[ "$line" =~ ^[[:space:]]+consumer_power: ]]; then
+                        current_power=$(echo "$line" | sed 's/^[[:space:]]*consumer_power: //' | tr -d '"')
+                    elif [[ "$line" =~ ^[[:space:]]+moniker: ]]; then
+                        current_moniker=$(echo "$line" | sed 's/^[[:space:]]*moniker: //')
+                    elif [[ "$line" =~ ^[[:space:]]+status: ]] || [[ "$line" =~ ^validators: ]] || [ -z "$line" ]; then
+                        # End of validator entry
+                        if [ -n "$current_address" ] && [ -n "$current_power" ]; then
+                            if [ -n "$current_moniker" ]; then
+                                printf "  • %s - %s (power: %s)\n" "$current_moniker" "$current_address" "$current_power"
+                            else
+                                printf "  • %s (power: %s)\n" "$current_address" "$current_power"
+                            fi
+                            current_address=""
+                            current_power=""
+                            current_moniker=""
+                        fi
+                        if [[ "$line" =~ ^validators: ]] || [ -z "$line" ]; then
+                            in_validator=false
+                        fi
+                    fi
+                fi
+            done
+            
+            # Output last validator if any
+            if [ -n "$current_address" ] && [ -n "$current_power" ]; then
+                if [ -n "$current_moniker" ]; then
+                    printf "  • %s - %s (power: %s)\n" "$current_moniker" "$current_address" "$current_power"
+                else
+                    printf "  • %s (power: %s)\n" "$current_address" "$current_power"
+                fi
+            fi
+        else
+            print_item "Not available (chain may not be launched yet)"
+        fi
     fi
 }
 
