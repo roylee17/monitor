@@ -153,3 +153,38 @@ run_with_spinner() {
     
     return $result
 }
+
+# Success/failure messages
+log_success() {
+    log_message "INFO" "$GREEN" "SUCCESS" "$1"
+}
+
+log_failure() {
+    log_message "ERROR" "$RED" "FAILURE" "$1"
+}
+
+# Print functions for formatting
+print_header() {
+    local header="$1"
+    echo
+    echo "========================================"
+    echo "$header"
+    echo "========================================"
+}
+
+print_subheader() {
+    local subheader="$1"
+    echo
+    echo "--- $subheader ---"
+}
+
+print_item() {
+    local item="$1"
+    echo "  • $item"
+}
+
+print_kv() {
+    local key="$1"
+    local value="$2"
+    printf "  %-20s : %s\n" "$key" "$value"
+}

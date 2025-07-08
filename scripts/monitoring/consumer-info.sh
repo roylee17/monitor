@@ -5,8 +5,8 @@
 set -e
 
 # Source the common functions
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../common/logging.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 
 # Function to get chain ID from consumer ID
 get_chain_id() {

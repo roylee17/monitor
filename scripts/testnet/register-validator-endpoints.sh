@@ -6,14 +6,14 @@
 set -e
 
 # Source common functions and variables
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../utils/common.sh"
-source "$SCRIPT_DIR/../utils/logging.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$THIS_SCRIPT_DIR/../utils/common.sh"
+source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 
 # Binary and chain configuration
 BINARY="${BINARY:-interchain-security-pd}"
 CHAIN_ID="${CHAIN_ID:-provider-1}"
-ASSETS_DIR="${ASSETS_DIR:-$SCRIPT_DIR/../../testnet/assets}"
+ASSETS_DIR="${ASSETS_DIR:-$THIS_SCRIPT_DIR/../../testnet/assets}"
 
 # Validators list
 VALIDATORS=(alice bob charlie)

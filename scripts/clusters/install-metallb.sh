@@ -2,9 +2,9 @@
 set -e
 
 # Source common functions
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../utils/common.sh"
-source "$SCRIPT_DIR/../utils/logging.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$THIS_SCRIPT_DIR/../utils/common.sh"
+source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 
 # Function to install MetalLB in a cluster using Helm
 install_metallb() {

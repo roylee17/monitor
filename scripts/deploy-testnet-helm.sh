@@ -12,7 +12,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HELM_CHART="$PROJECT_ROOT/helm/ics-validator"
 
 # Source common functions
-source "${SCRIPT_DIR}/common/logging.sh"
+source "${SCRIPT_DIR}/utils/logging.sh"
 
 # Configuration
 VALIDATORS=("alice" "bob" "charlie")

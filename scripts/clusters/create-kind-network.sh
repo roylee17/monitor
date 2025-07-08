@@ -2,8 +2,8 @@
 set -e
 
 # Source logging utilities
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../common/logging.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 
 # Check if kind network exists
 check_kind_network() {

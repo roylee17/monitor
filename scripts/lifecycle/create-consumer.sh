@@ -4,9 +4,9 @@
 set -e
 
 # Source common functions
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../common/logging.sh"
-source "${SCRIPT_DIR}/consumer-utils.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${THIS_SCRIPT_DIR}/../utils/logging.sh"
+source "${THIS_SCRIPT_DIR}/consumer-utils.sh"
 
 # Command line options
 CHAIN_ID=""

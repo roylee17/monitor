@@ -45,7 +45,7 @@ SAVE_KEYS=false        # Set via command line flag (-s to save keys)
 
 # Source common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common/logging.sh"
+source "${SCRIPT_DIR}/utils/logging.sh"
 
 # Suppress sonic warnings from the Go binary
 export GODEBUG=asyncpreemptoff=1

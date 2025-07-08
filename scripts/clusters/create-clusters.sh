@@ -2,11 +2,11 @@
 set -e
 
 # Source common utilities
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../common/logging.sh"
+THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 
 # Configuration
-KIND_CONFIG_DIR="$SCRIPT_DIR/kind"
+KIND_CONFIG_DIR="$THIS_SCRIPT_DIR/kind"
 CLUSTERS=("alice" "bob" "charlie")
 
 # Function to create a single cluster
@@ -40,7 +40,7 @@ main() {
     fi
     
     # Ensure kind network exists with correct subnet
-    "$SCRIPT_DIR/create-kind-network.sh"
+    "$THIS_SCRIPT_DIR/create-kind-network.sh"
     
     # Create clusters in parallel
     for cluster in "${CLUSTERS[@]}"; do
