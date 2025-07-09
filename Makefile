@@ -85,7 +85,7 @@ clean-consumers: ## Clean consumer chain namespaces
 # ============================================
 docker-build: ## Build monitor Docker image
 	@echo "🐳 Building Docker image $(MONITOR_IMAGE)..."
-	@DOCKER_BUILDKIT=1 docker build -t $(MONITOR_IMAGE) .
+	@DOCKER_BUILDKIT=1 docker build -q -t $(MONITOR_IMAGE) .
 	@echo "✅ Docker image ready"
 
 # ============================================
