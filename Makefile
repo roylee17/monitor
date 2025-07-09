@@ -96,10 +96,11 @@ generate-devnet: ## Generate devnet configuration
 	@$(SCRIPTS_DIR)/devnet/generate-devnet.sh -t '2025-01-01T00:00:00Z' -s
 	@echo "✅ Devnet configuration generated"
 
-create-clusters: ## Create 3 Kind clusters
+create-clusters: ## Create 3 Kind clusters with MetalLB
 	@echo "🌐 Creating 3 Kind clusters..."
 	@$(SCRIPTS_DIR)/clusters/create-clusters.sh
 	@echo "✅ Clusters created successfully"
+	@$(MAKE) -s _deploy-metallb
 
 delete-clusters: ## Delete all Kind clusters
 	@echo "🗑️  Deleting all Kind clusters..."
@@ -124,13 +125,12 @@ reset: ## Full reset and redeploy
 	@$(MAKE) -s clean-assets
 	@$(MAKE) -s deploy
 
-deploy-metallb:
+_deploy-metallb: ## Internal: Install MetalLB for LoadBalancer support
 	@echo "📦 Installing MetalLB for LoadBalancer support..."
 	@$(SCRIPTS_DIR)/clusters/install-metallb.sh
 
 quick-start: ## Complete setup with consumer chain (automated flow)
 	@$(MAKE) -s deploy
-	@$(MAKE) -s deploy-metallb
 	@$(MAKE) -s register-endpoints
 	@$(MAKE) -s create-consumer
 	@echo "⏳ Show on-chain consumer status..."
