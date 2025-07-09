@@ -34,8 +34,9 @@ install_metallb() {
         --set controller.tolerations[0].effect=NoSchedule \
         --set controller.tolerations[0].operator=Exists
     
-    # Wait a moment for CRDs to be fully established
-    sleep 5
+    # Wait for MetalLB CRDs to be established
+    kubectl wait --for=condition=Established crd ipaddresspools.metallb.io --timeout=30s
+    kubectl wait --for=condition=Established crd l2advertisements.metallb.io --timeout=30s
     
     # Create IPAddressPool and L2Advertisement
     cat <<EOF | kubectl apply -f -
