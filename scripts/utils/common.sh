@@ -13,7 +13,7 @@ get_repo_root() {
 # Export common variables
 export REPO_ROOT=$(get_repo_root)
 export SCRIPTS_DIR="$REPO_ROOT/scripts"
-export ASSETS_DIR=".testnet/assets"
+export ASSETS_DIR=".devnet/assets"
 
 # Default values
 export DEFAULT_CHAIN_ID="provider"

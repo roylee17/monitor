@@ -34,7 +34,7 @@ create_cluster() {
 
 # Main execution
 main() {
-    log_info "Creating 3 Kind clusters for multi-cluster testnet"
+    log_info "Creating 3 Kind clusters for multi-cluster devnet"
 
     # Check if kind is installed
     if ! command -v kind &> /dev/null; then

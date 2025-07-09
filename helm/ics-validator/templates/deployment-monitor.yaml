@@ -103,7 +103,7 @@ spec:
         - "--from"
         - {{ .Values.validator.name | quote }}
         env:
-        {{- if .Values.testnet.enabled }}
+        {{- if .Values.devnet.enabled }}
         - name: MULTI_CLUSTER_MODE
           value: "true"
         - name: VALIDATOR_NAME

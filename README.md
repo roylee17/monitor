@@ -643,7 +643,7 @@ make quick-start
 
 This will:
 
-1. Deploy a 3-validator testnet
+1. Deploy a 3-validator devnet
 2. Install MetalLB for as a Kubernetes LoadBalancer
 3. Register validator endpoints
 4. Create a consumer chain
@@ -654,9 +654,9 @@ The whole process takes about 5 minutes.
 
 Check [Quick Start Guide](docs/quick-start.md) for details
 
-### Testnet Architecture
+### Devnet Architecture
 
-The testnet consists of:
+The devnet consists of:
 
 - **3 Validators**: alice, bob, and charlie with deterministic keys
 - **3 Monitors**: One per validator, monitoring and managing consumer chains

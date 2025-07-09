@@ -4,9 +4,10 @@ This directory contains utility scripts for managing and monitoring the ICS depl
 
 ## Subdirectories
 
-- **`common/`** - Shared utilities and logging functions
+- **`utils/`** - Shared utilities and logging functions
+- **`clusters/`** - Kind cluster management and MetalLB utilities
+- **`devnet/`** - Devnet config genereation
 - **`lifecycle/`** - Consumer chain lifecycle management scripts
-- **`clusters/`** - Cluster management and MetalLB utilities
 
 ## Conventions
 

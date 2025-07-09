@@ -33,7 +33,7 @@ go.work
 Thumbs.db
 
 # Testnet assets (contains generated validator keys)
-.testnet/
+.devnet/
 bin/
 .metallb-ips
 .claude

@@ -64,7 +64,7 @@ The monitor is designed to work with minimal configuration, automatically discov
 | `CHAIN_RPC` | string | - | RPC endpoint URL |
 | `CHAIN_GRPC` | string | - | gRPC endpoint URL |
 | `VALIDATOR_KEY` | string | - | Validator key name |
-| `TESTNET_COORDINATOR_KEY` | string | - | Testnet coordinator key |
+| `DEVNET_COORDINATOR_KEY` | string | - | Devnet coordinator key |
 
 ### Feature Flags
 
@@ -73,12 +73,12 @@ The monitor is designed to work with minimal configuration, automatically discov
 | `AUTO_UPDATE_CONSUMERS` | bool | `false` | Enable automatic consumer chain updates when validator endpoints change |
 | `HYBRID_PEER_UPDATES` | bool | `false` | Enable zero-downtime peer updates via RPC before falling back to restarts |
 
-### Testnet Mode Variables
+### Devnet Mode Variables
 
 | Variable | Description | Used When | Example |
 |----------|-------------|-----------|---------|
-| `MULTI_CLUSTER_MODE` | Enable multi-cluster mode | Testnet deployments | `MULTI_CLUSTER_MODE=true` |
-| `VALIDATOR_NAME` | Name of the validator | Testnet deployments | `VALIDATOR_NAME=alice` |
+| `MULTI_CLUSTER_MODE` | Enable multi-cluster mode | Devnet deployments | `MULTI_CLUSTER_MODE=true` |
+| `VALIDATOR_NAME` | Name of the validator | Devnet deployments | `VALIDATOR_NAME=alice` |
 
 All command-line flags can also be set via environment variables using Viper's automatic env binding.
 
@@ -234,11 +234,11 @@ monitor:
       cpu: "500m"
 ```
 
-### Testnet Configuration
+### Devnet Configuration
 
 ```yaml
-testnet:
-  enabled: false           # Enable testnet mode
+devnet:
+  enabled: false           # Enable devnet mode
   kindCluster: false       # Running in Kind cluster
   useDockerInternal: false # Use host.docker.internal for Docker Desktop
 
@@ -346,7 +346,7 @@ For local Kind clusters, MetalLB must be installed:
 ./scripts/clusters/install-metallb.sh
 
 # Register endpoints after LoadBalancers get IPs
-./scripts/testnet/register-validator-endpoints.sh
+./scripts/devnet/register-validator-endpoints.sh
 ```
 
 ## Example Configurations
@@ -361,10 +361,10 @@ monitor start \
   --from alice
 ```
 
-### Kubernetes Testnet Deployment
+### Kubernetes Devnet Deployment
 
 ```yaml
-# values-testnet.yaml
+# values-devnet.yaml
 validator:
   name: alice
   index: 0
@@ -379,14 +379,14 @@ monitor:
     - validator-bob:26656
     - validator-charlie:26656
 
-testnet:
+devnet:
   enabled: true
   kindCluster: true
 ```
 
 ```bash
 # Deploy with Helm
-helm install alice ./helm/ics-validator -f values-testnet.yaml
+helm install alice ./helm/ics-validator -f values-devnet.yaml
 ```
 
 ### Production Deployment

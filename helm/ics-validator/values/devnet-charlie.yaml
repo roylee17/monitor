@@ -1,4 +1,4 @@
-# Values for Charlie validator in testnet
+# Values for Charlie validator in devnet
 validator:
   name: charlie
   moniker: "Charlie Validator"
@@ -21,7 +21,7 @@ monitor:
     - "host.docker.internal:26659"
 
 # External endpoints for other validators
-testnet:
+devnet:
   externalEndpoints:
     alice: "host.docker.internal:26657"
     bob: "host.docker.internal:26658"

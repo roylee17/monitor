@@ -85,7 +85,7 @@ Consumer chains in ICS v7 go through the following phases:
 ./create-consumer.sh -s 60
 
 # Create with specific chain ID
-./create-consumer.sh -c testnet-1 -s 120
+./create-consumer.sh -c devnet-1 -s 120
 
 # Create with auto opt-in (all validators)
 ./create-consumer.sh -o -s 30

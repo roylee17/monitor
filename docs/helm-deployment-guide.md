@@ -7,7 +7,7 @@ This guide explains how to deploy ICS validators using the new Helm-based system
 The project now uses a unified Helm chart (`helm/ics-validator`) for all deployments:
 
 - **Single validators** use it to deploy their infrastructure
-- **Testnet** uses it 3 times with different configurations
+- **Devnet** uses it 3 times with different configurations
 
 ## Prerequisites
 
@@ -16,7 +16,7 @@ The project now uses a unified Helm chart (`helm/ics-validator`) for all deploym
 3. **Docker** (for building the monitor image)
 4. **kubectl** configured
 
-## Testnet Deployment (3 Validators)
+## Devnet Deployment (3 Validators)
 
 ### Quick Start
 
@@ -24,12 +24,12 @@ The project now uses a unified Helm chart (`helm/ics-validator`) for all deploym
 # 1. Clean any existing setup
 make clean
 
-# 2. Deploy the complete testnet
+# 2. Deploy the complete devnet
 make deploy
 
 # This will:
 # - Build the monitor Docker image
-# - Generate testnet configuration (genesis, keys)
+# - Generate devnet configuration (genesis, keys)
 # - Create 3 Kind clusters (alice, bob, charlie)
 # - Deploy validators using Helm
 ```
@@ -40,22 +40,22 @@ make deploy
 # 1. Build the monitor image
 make docker-build
 
-# 2. Generate testnet assets (genesis, keys)
-./scripts/testnet-coordinator.sh
+# 2. Generate devnet assets (genesis, keys)
+./scripts/devnet-coordinator.sh
 
 # 3. Create Kind clusters
 ./scripts/clusters/create-clusters.sh
 
 # 4. Deploy using Helm
-./scripts/deploy-testnet-helm.sh
+./scripts/deploy-devnet-helm.sh
 
 # Or deploy each validator manually:
 helm install alice ./helm/ics-validator \
   --namespace alice \
   --create-namespace \
-  --values ./helm/ics-validator/testnet-values.yaml \
-  --values ./helm/ics-validator/values/testnet-alice.yaml \
-  --set-string chain.genesis.inline="$(cat testnet/assets/alice/config/genesis.json)" \
+  --values ./helm/ics-validator/devnet-values.yaml \
+  --values ./helm/ics-validator/values/devnet-alice.yaml \
+  --set-string chain.genesis.inline="$(cat devnet/assets/alice/config/genesis.json)" \
   --set peers.persistent="{...}"
 ```
 
@@ -199,7 +199,7 @@ helm upgrade myvalidator ./helm/ics-validator \
 ### Uninstall
 
 ```bash
-# Testnet
+# Devnet
 make clean
 
 # Single validator
@@ -244,7 +244,7 @@ kubectl -n alice exec deploy/alice-ics-validator-validator -- \
 
 - Each validator runs in its own namespace
 - The Helm chart creates all necessary resources (RBAC, ConfigMaps, Secrets, etc.)
-- Testnet validators use Kind's `host.docker.internal` for cross-cluster communication
+- Devnet validators use Kind's `host.docker.internal` for cross-cluster communication
 - Production validators should use proper DNS/IPs for peers
 
 ## Next Steps

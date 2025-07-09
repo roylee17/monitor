@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Deploy testnet using Helm charts
+# Deploy devnet using Helm charts
 #
-# This script deploys a 3-validator testnet using the ics-validator Helm chart.
+# This script deploys a 3-validator devnet using the ics-validator Helm chart.
 # Each validator runs in its own Kind cluster.
 
 set -e
@@ -16,7 +16,7 @@ source "${SCRIPT_DIR}/utils/logging.sh"
 
 # Configuration
 VALIDATORS=("alice" "bob" "charlie")
-ASSETS_DIR="$PROJECT_ROOT/.testnet/assets"
+ASSETS_DIR="$PROJECT_ROOT/.devnet/assets"
 
 # Check if helm is installed
 check_helm() {
@@ -29,12 +29,12 @@ check_helm() {
 # Check if assets exist
 check_assets() {
     if [ ! -d "$ASSETS_DIR" ]; then
-        error "Assets directory not found. Run generate-testnet.sh first."
+        error "Assets directory not found. Run generate-devnet.sh first."
     fi
 
     # Check for genesis file
     if [ ! -f "$ASSETS_DIR/alice/config/genesis.json" ]; then
-        error "Genesis file not found. Run generate-testnet.sh first."
+        error "Genesis file not found. Run generate-devnet.sh first."
     fi
 }
 
@@ -120,8 +120,8 @@ EOF
     helm upgrade --install "$validator" "$HELM_CHART" \
         --namespace "$namespace" \
         --kube-context "$context" \
-        --values "$HELM_CHART/testnet-values.yaml" \
-        --values "$HELM_CHART/values/testnet-${validator}.yaml" \
+        --values "$HELM_CHART/devnet-values.yaml" \
+        --values "$HELM_CHART/values/devnet-${validator}.yaml" \
         --values "$temp_values"
 
     local result=$?
@@ -156,7 +156,7 @@ check_validator_status() {
 
 # Main execution
 main() {
-    log_info "Starting testnet deployment with Helm"
+    log_info "Starting devnet deployment with Helm"
 
     # Run checks
     check_helm
@@ -184,7 +184,7 @@ main() {
         check_validator_status "$validator"
     done
 
-    log_info "Testnet deployment complete!"
+    log_info "Devnet deployment complete!"
     log_info ""
     log_info "To check status:"
     log_info "  helm list -A"
@@ -202,11 +202,11 @@ case "${1:-}" in
     -h|--help)
         echo "Usage: $0"
         echo ""
-        echo "Deploy a 3-validator testnet using Helm charts."
+        echo "Deploy a 3-validator devnet using Helm charts."
         echo "Prerequisites:"
         echo "  - Helm installed"
         echo "  - Kind clusters created (alice-cluster, bob-cluster, charlie-cluster)"
-        echo "  - Testnet assets generated (run testnet-coordinator.sh)"
+        echo "  - Devnet assets generated (run devnet-coordinator.sh)"
         exit 0
         ;;
 esac

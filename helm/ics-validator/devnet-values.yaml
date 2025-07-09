@@ -1,13 +1,13 @@
-# Testnet-specific values for ics-validator
-# This file contains common settings for testnet deployments
+# Devnet-specific values for ics-validator
+# This file contains common settings for devnet deployments
 
 # Use the standard test mnemonic
 keys:
   type: "mnemonic"
   mnemonic: "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host"
 
-# Testnet mode enabled
-testnet:
+# Devnet mode enabled
+devnet:
   enabled: true
   kindCluster: true
   useDockerInternal: true
@@ -16,14 +16,14 @@ testnet:
 service:
   type: NodePort
 
-# Don't use persistent storage for testnet
+# Don't use persistent storage for devnet
 storage:
   validator:
     size: ""
   monitor:
     size: ""
 
-# Lower resource requirements for testnet
+# Lower resource requirements for devnet
 resources:
   validator:
     limits:
@@ -40,7 +40,7 @@ resources:
       cpu: 25m
       memory: 64Mi
 
-# Disable pod security restrictions for testnet
+# Disable pod security restrictions for devnet
 podSecurityContext:
   fsGroup: 1000
   runAsUser: 1000

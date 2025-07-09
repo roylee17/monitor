@@ -35,7 +35,7 @@ Options:
 
 Examples:
   $0                       # Create with defaults
-  $0 -c testnet-1 -s 120   # Custom chain ID, 2 minute spawn delay
+  $0 -c devnet-1 -s 120    # Custom chain ID, 2 minute spawn delay
   $0 -n "My Chain" -o      # Named chain with auto opt-in
 EOF
 }

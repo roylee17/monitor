@@ -159,7 +159,7 @@ kubectl -n metallb-system get pods
 
 ```bash
 # Check registered endpoints
-./scripts/testnet/register-validator-endpoints.sh status
+./scripts/devnet/register-validator-endpoints.sh status
 
 # Query on-chain endpoints
 kubectl -n provider exec validator -- \
@@ -174,7 +174,7 @@ kubectl -n provider wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
   svc/p2p-loadbalancer --timeout=300s
 
 # Register endpoints
-./scripts/testnet/register-validator-endpoints.sh
+./scripts/devnet/register-validator-endpoints.sh
 ```
 
 ### Port Forward Manager Issues

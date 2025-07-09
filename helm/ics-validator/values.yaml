@@ -139,9 +139,9 @@ storage:
     storageClassName: ""
     size: 1Gi
 
-# Testnet-specific configuration
-testnet:
-  # Enable testnet mode (adjusts networking for Kind clusters)
+# Devnet-specific configuration
+devnet:
+  # Enable devnet mode (adjusts networking for Kind clusters)
   enabled: false
   # Running in Kind cluster
   kindCluster: false

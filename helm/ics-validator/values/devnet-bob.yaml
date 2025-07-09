@@ -1,10 +1,10 @@
-# Values for Alice validator in testnet
+# Values for Bob validator in devnet
 validator:
-  name: alice
-  moniker: "Alice Validator"
-  index: 0
+  name: bob
+  moniker: "Bob Validator"
+  index: 1
 
-# NodePort mappings for alice
+# NodePort mappings for bob
 service:
   nodePorts:
     p2p: 30656
@@ -21,7 +21,7 @@ monitor:
     - "host.docker.internal:26659"
 
 # External endpoints for other validators
-testnet:
+devnet:
   externalEndpoints:
     alice: "host.docker.internal:26657"
     bob: "host.docker.internal:26658"

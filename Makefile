@@ -10,7 +10,7 @@
 ICS_VERSION ?= v7.0.1
 
 # Directories
-TESTNET_DIR := ./testnet
+DEVNET_DIR := ./devnet
 SCRIPTS_DIR := scripts
 
 # Docker settings
@@ -31,7 +31,7 @@ VALIDATOR_COUNT := 3
 # ============================================
 .PHONY: help clean clean-consumers clean-assets quick-start
 .PHONY: docker-build
-.PHONY: generate-testnet create-clusters delete-clusters deploy reset register-endpoints
+.PHONY: generate-devnet create-clusters delete-clusters deploy reset register-endpoints
 .PHONY: status status-verbose logs shell
 .PHONY: create-consumer list-consumers show-consumer remove-consumer
 .PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs
@@ -69,7 +69,7 @@ clean: delete-clusters clean-assets ## Clean everything
 
 clean-assets: ## Clean generated assets and manifests
 	@echo "🧹 Cleaning generated files..."
-	@rm -rf $(TESTNET_DIR)/assets
+	@rm -rf $(DEVNET_DIR)/assets
 	@echo "✅ Clean complete"
 
 clean-consumers: ## Clean consumer chain namespaces
@@ -91,10 +91,10 @@ docker-build: ## Build monitor Docker image
 # ============================================
 # Deployment targets
 # ============================================
-generate-testnet: ## Generate testnet configuration
-	@echo "⚙️  Generating testnet configuration..."
-	@$(SCRIPTS_DIR)/testnet/generate-testnet.sh -t '2025-01-01T00:00:00Z' -s
-	@echo "✅ Testnet configuration generated"
+generate-devnet: ## Generate devnet configuration
+	@echo "⚙️  Generating devnet configuration..."
+	@$(SCRIPTS_DIR)/devnet/generate-devnet.sh -t '2025-01-01T00:00:00Z' -s
+	@echo "✅ Devnet configuration generated"
 
 create-clusters: ## Create 3 Kind clusters
 	@echo "🌐 Creating 3 Kind clusters..."
@@ -106,9 +106,9 @@ delete-clusters: ## Delete all Kind clusters
 	@$(SCRIPTS_DIR)/clusters/delete-clusters.sh
 	@echo "✅ Clusters deleted successfully"
 
-deploy: create-clusters docker-build generate-testnet ## Full deployment
-	@echo "🚀 Deploying testnet with Helm..."
-	@$(SCRIPTS_DIR)/deploy-testnet-helm.sh
+deploy: create-clusters docker-build generate-devnet ## Full deployment
+	@echo "🚀 Deploying devnet with Helm..."
+	@$(SCRIPTS_DIR)/deploy-devnet-helm.sh
 	@echo ""
 	@echo "📝 Next steps:"
 	@echo "   - View status: make status"
@@ -117,7 +117,7 @@ deploy: create-clusters docker-build generate-testnet ## Full deployment
 
 register-endpoints: ## Register validator P2P endpoints on chain
 	@echo "📝 Registering validator P2P endpoints..."
-	@$(SCRIPTS_DIR)/testnet/register-validator-endpoints.sh
+	@$(SCRIPTS_DIR)/devnet/register-validator-endpoints.sh
 
 reset: ## Full reset and redeploy
 	@$(MAKE) -s delete-clusters

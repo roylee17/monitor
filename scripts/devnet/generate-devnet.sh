@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Testnet Coordinator Script
+# Devnet Coordinator Script
 #
-# This script performs a complete genesis ceremony for a 3-validator testnet.
+# This script performs a complete genesis ceremony for a 3-validator devnet.
 # It handles three types of keys:
 #
 # 1. Validator Account Keys (secp256k1):
@@ -33,8 +33,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../" && pwd)"
 CHAIN_ID="provider-1"
 DENOM="stake"
 BINARY="interchain-security-pd"
-ASSETS_DIR="$PROJECT_ROOT/.testnet/assets"
-KEYS_BACKUP_DIR="$PROJECT_ROOT/.testnet/keys-backup"
+ASSETS_DIR="$PROJECT_ROOT/.devnet/assets"
+KEYS_BACKUP_DIR="$PROJECT_ROOT/.devnet/keys-backup"
 
 # Validator names
 VALIDATORS=("alice" "bob" "charlie")
@@ -330,7 +330,7 @@ create_summary() {
     log_info "Creating summary..."
 
     cat > "$ASSETS_DIR/summary.txt" << EOF
-=== Testnet Configuration Summary ===
+=== Devnet Configuration Summary ===
 
 Chain ID: $CHAIN_ID
 Denom: $DENOM
@@ -402,7 +402,7 @@ done
 
 # Main execution
 main() {
-    log_info "Starting 3-validator testnet genesis ceremony..."
+    log_info "Starting 3-validator devnet genesis ceremony..."
 
     if [ -n "$FIXED_GENESIS_TIME" ]; then
         log_info "Using fixed genesis time: $FIXED_GENESIS_TIME"

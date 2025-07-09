@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-This guide walks you through setting up a testnet, creating a consumer chain, and verifying it's working correctly.
+This guide walks you through setting up a devnet, creating a consumer chain, and verifying it's working correctly.
 
 ```bash
 make quick-start
@@ -8,7 +8,7 @@ make quick-start
 
 This will:
 
-1. Deploy a 3-validator testnet
+1. Deploy a 3-validator devnet
 2. Install MetalLB for as a Kubernetes LoadBalancer
 3. Register validator endpoints
 4. Create a consumer chain
@@ -25,9 +25,9 @@ The whole process takes about 5 minutes.
 - Make installed
 - At least 8GB of available RAM
 
-## Step 1: Deploy the Testnet
+## Step 1: Deploy the Devnet
 
-Start by deploying a fresh 3-validator testnet with monitors:
+Start by deploying a fresh 3-validator devnet with monitors:
 
 ```bash
 # Full deployment: creates clusters, builds images, and deploys
@@ -38,7 +38,7 @@ This command will:
 
 1. Create 3 Kind clusters (alice, bob, charlie)
 2. Build the monitor Docker image
-3. Generate testnet configuration
+3. Generate devnet configuration
 4. Deploy validators and monitors using Helm
 
 Wait for all pods to be running (about 30-60 seconds):

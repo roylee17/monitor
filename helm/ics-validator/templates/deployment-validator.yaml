@@ -106,7 +106,7 @@ spec:
           
           # Network configuration
           sed -i 's/addr_book_strict = true/addr_book_strict = false/' /chain/.provider/config/config.toml
-          {{- if .Values.testnet.kindCluster }}
+          {{- if .Values.devnet.kindCluster }}
           sed -i 's/allow_duplicate_ip = false/allow_duplicate_ip = true/' /chain/.provider/config/config.toml
           {{- end }}
           

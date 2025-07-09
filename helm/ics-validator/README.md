@@ -19,19 +19,19 @@ helm install myvalidator ./helm/ics-validator \
   --set peers.persistent="{nodeID1@peer1.example.com:26656,nodeID2@peer2.example.com:26656}"
 ```
 
-### Testnet Deployment
+### Devnet Deployment
 
-For the 3-validator testnet:
+For the 3-validator devnet:
 
 ```bash
 # Use the provided script
-./scripts/deploy-testnet-helm.sh
+./scripts/deploy-devnet-helm.sh
 
 # Or deploy manually
 helm install alice ./helm/ics-validator \
   --namespace alice \
-  --values ./helm/ics-validator/testnet-values.yaml \
-  --values ./helm/ics-validator/values/testnet-alice.yaml \
+  --values ./helm/ics-validator/devnet-values.yaml \
+  --values ./helm/ics-validator/values/devnet-alice.yaml \
   --set-string chain.genesis.inline="$(cat genesis.json)" \
   --set peers.persistent="{...}"
 ```
@@ -194,14 +194,14 @@ resources:
       cpu: "4"
 ```
 
-### Testnet Validator in Kind
+### Devnet Validator in Kind
 
 ```yaml
 validator:
   name: alice
   index: 0
 
-testnet:
+devnet:
   enabled: true
   kindCluster: true
   useDockerInternal: true
@@ -213,7 +213,7 @@ service:
 
 storage:
   validator:
-    size: ""  # Use emptyDir for testnet
+    size: ""  # Use emptyDir for devnet
 ```
 
 ## Upgrading

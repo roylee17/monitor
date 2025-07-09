@@ -13,7 +13,7 @@ source "$THIS_SCRIPT_DIR/../utils/logging.sh"
 # Binary and chain configuration
 BINARY="${BINARY:-interchain-security-pd}"
 CHAIN_ID="${CHAIN_ID:-provider-1}"
-ASSETS_DIR="${ASSETS_DIR:-$THIS_SCRIPT_DIR/../../testnet/assets}"
+ASSETS_DIR="${ASSETS_DIR:-$THIS_SCRIPT_DIR/../../devnet/assets}"
 
 # Validators list
 VALIDATORS=(alice bob charlie)

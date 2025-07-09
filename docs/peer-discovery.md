@@ -522,7 +522,7 @@ func (u *ConsumerChainUpdater) hybridUpdatePeers(ctx context.Context, namespace,
 
 ## Deployment Setup
 
-### For Testnet (Kind + MetalLB)
+### For Devnet (Kind + MetalLB)
 
 1. **Install MetalLB**:
 
@@ -533,13 +533,13 @@ func (u *ConsumerChainUpdater) hybridUpdatePeers(ctx context.Context, namespace,
 2. **Deploy validators with LoadBalancer services**:
 
 ```bash
-./scripts/testnet/deploy-testnet-helm.sh
+./scripts/devnet/deploy-devnet-helm.sh
 ```
 
 3. **Register validator endpoints**:
 
 ```bash
-./scripts/testnet/register-validator-endpoints.sh
+./scripts/devnet/register-validator-endpoints.sh
 ```
 
 ### For Production
