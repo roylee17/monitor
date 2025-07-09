@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ics-validator.fullname" . }}-validator
+  name: {{ include "ics-operator.fullname" . }}-validator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: validator
 spec:
   type: {{ .Values.service.type }}
   selector:
-    {{- include "ics-validator.selectorLabels" . | nindent 4 }}
+    {{- include "ics-operator.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: validator
   ports:
   - name: p2p

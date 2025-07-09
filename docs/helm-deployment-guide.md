@@ -4,7 +4,7 @@ This guide explains how to deploy ICS validators using the new Helm-based system
 
 ## Overview
 
-The project now uses a unified Helm chart (`helm/ics-validator`) for all deployments:
+The project now uses a unified Helm chart (`helm/ics-operator`) for all deployments:
 
 - **Single validators** use it to deploy their infrastructure
 - **Devnet** uses it 3 times with different configurations
@@ -50,11 +50,11 @@ make docker-build
 ./scripts/deploy-devnet-helm.sh
 
 # Or deploy each validator manually:
-helm install alice ./helm/ics-validator \
+helm install alice ./helm/ics-operator \
   --namespace alice \
   --create-namespace \
-  --values ./helm/ics-validator/devnet-values.yaml \
-  --values ./helm/ics-validator/values/devnet-alice.yaml \
+  --values ./helm/ics-operator/devnet-values.yaml \
+  --values ./helm/ics-operator/values/devnet-alice.yaml \
   --set-string chain.genesis.inline="$(cat devnet/assets/alice/config/genesis.json)" \
   --set peers.persistent="{...}"
 ```
@@ -129,7 +129,7 @@ storage:
 EOF
 
 # 4. Deploy
-helm install myvalidator ./helm/ics-validator \
+helm install myvalidator ./helm/ics-operator \
   --namespace myvalidator \
   --create-namespace \
   -f my-validator.yaml
@@ -190,7 +190,7 @@ make create-consumer
 ### Upgrade Validator
 
 ```bash
-helm upgrade myvalidator ./helm/ics-validator \
+helm upgrade myvalidator ./helm/ics-operator \
   --namespace myvalidator \
   --reuse-values \
   --set chain.image="ghcr.io/cosmos/interchain-security:v7.0.2"
@@ -229,7 +229,7 @@ kubectl -n alice logs -l app.kubernetes.io/component=monitor
 ### Check Sync Status
 
 ```bash
-kubectl -n alice exec deploy/alice-ics-validator-validator -- \
+kubectl -n alice exec deploy/alice-ics-operator-validator -- \
   curl -s localhost:26657/status | jq .result.sync_info
 ```
 
@@ -249,6 +249,6 @@ kubectl -n alice exec deploy/alice-ics-validator-validator -- \
 
 ## Next Steps
 
-- See `helm/ics-validator/README.md` for detailed chart documentation
+- See `helm/ics-operator/README.md` for detailed chart documentation
 - Check [Deployment Examples](operations/deployment-examples.md) for more scenarios
-- Review `helm/ics-validator/values.yaml` for all configuration options
+- Review `helm/ics-operator/values.yaml` for all configuration options

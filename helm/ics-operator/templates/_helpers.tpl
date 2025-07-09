@@ -1,7 +1,7 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "ics-validator.name" -}}
+{{- define "ics-operator.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
@@ -9,23 +9,23 @@ Expand the name of the chart.
 Create a default fully qualified app name.
 For cleaner names, we just use the release name (alice, bob, charlie)
 */}}
-{{- define "ics-validator.fullname" -}}
+{{- define "ics-operator.fullname" -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "ics-validator.chart" -}}
+{{- define "ics-operator.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "ics-validator.labels" -}}
-helm.sh/chart: {{ include "ics-validator.chart" . }}
-{{ include "ics-validator.selectorLabels" . }}
+{{- define "ics-operator.labels" -}}
+helm.sh/chart: {{ include "ics-operator.chart" . }}
+{{ include "ics-operator.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -35,17 +35,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "ics-validator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "ics-validator.name" . }}
+{{- define "ics-operator.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "ics-operator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "ics-validator.serviceAccountName" -}}
+{{- define "ics-operator.serviceAccountName" -}}
 {{- if .Values.rbac.create }}
-{{- default (include "ics-validator.fullname" .) .Values.rbac.serviceAccountName }}
+{{- default (include "ics-operator.fullname" .) .Values.rbac.serviceAccountName }}
 {{- else }}
 {{- default "default" .Values.rbac.serviceAccountName }}
 {{- end }}
@@ -54,7 +54,7 @@ Create the name of the service account to use
 {{/*
 Get the HD path for key derivation
 */}}
-{{- define "ics-validator.hdPath" -}}
+{{- define "ics-operator.hdPath" -}}
 {{- if .Values.keys.hdPath }}
 {{- .Values.keys.hdPath }}
 {{- else }}
@@ -65,29 +65,29 @@ Get the HD path for key derivation
 {{/*
 Get persistent peers as a comma-separated string
 */}}
-{{- define "ics-validator.persistentPeers" -}}
+{{- define "ics-operator.persistentPeers" -}}
 {{- join "," .Values.peers.persistent }}
 {{- end }}
 
 {{/*
 Get seeds as a comma-separated string
 */}}
-{{- define "ics-validator.seeds" -}}
+{{- define "ics-operator.seeds" -}}
 {{- join "," .Values.peers.seeds }}
 {{- end }}
 
 {{/*
 Get provider endpoints as a comma-separated string
 */}}
-{{- define "ics-validator.providerEndpoints" -}}
+{{- define "ics-operator.providerEndpoints" -}}
 {{- join "," .Values.monitor.providerEndpoints }}
 {{- end }}
 
 {{/*
 Determine the RPC endpoint for internal use
 */}}
-{{- define "ics-validator.rpcEndpoint" -}}
-{{- printf "http://%s-validator:26657" (include "ics-validator.fullname" .) }}
+{{- define "ics-operator.rpcEndpoint" -}}
+{{- printf "http://%s-validator:26657" (include "ics-operator.fullname" .) }}
 {{- end }}
 
 {{/*
@@ -95,7 +95,7 @@ Pre-calculated addresses for standard test mnemonic
 These are the addresses for the mnemonic:
 "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host"
 */}}
-{{- define "ics-validator.knownAddresses" -}}
+{{- define "ics-operator.knownAddresses" -}}
 {{- $addresses := dict }}
 {{- $_ := set $addresses "0" "cosmos1zaavvzxez0elundtn32qnk9lkm8kmcszzsv80v" }}
 {{- $_ := set $addresses "1" "cosmos1yxgfnpk2u6h9prhhukcunszcwc277s2cwpds6u" }}
@@ -106,8 +106,8 @@ These are the addresses for the mnemonic:
 {{/*
 Get the address for a validator (if using known test mnemonic)
 */}}
-{{- define "ics-validator.getAddress" -}}
-{{- $knownAddresses := include "ics-validator.knownAddresses" . | fromJson }}
+{{- define "ics-operator.getAddress" -}}
+{{- $knownAddresses := include "ics-operator.knownAddresses" . | fromJson }}
 {{- $index := .Values.validator.index | toString }}
 {{- if hasKey $knownAddresses $index }}
 {{- index $knownAddresses $index }}

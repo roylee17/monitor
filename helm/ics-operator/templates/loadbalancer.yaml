@@ -5,7 +5,7 @@ metadata:
   name: p2p-loadbalancer
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: p2p-gateway
     app.kubernetes.io/managed-by: ics-monitor
   {{- with .Values.loadBalancer.annotations }}

@@ -1,6 +1,6 @@
-# ICS Validator Helm Chart
+# ICS Operator Helm Chart
 
-This Helm chart deploys an Interchain Security validator and monitor to Kubernetes.
+This Helm chart deploys an Interchain Security operator and monitor to Kubernetes.
 
 ## Installation
 
@@ -9,7 +9,7 @@ This Helm chart deploys an Interchain Security validator and monitor to Kubernet
 For a production validator with your own mnemonic:
 
 ```bash
-helm install myvalidator ./helm/ics-validator \
+helm install myvalidator ./helm/ics-operator \
   --namespace myvalidator \
   --create-namespace \
   --set validator.name=myvalidator \
@@ -28,10 +28,10 @@ For the 3-validator devnet:
 ./scripts/deploy-devnet-helm.sh
 
 # Or deploy manually
-helm install alice ./helm/ics-validator \
+helm install alice ./helm/ics-operator \
   --namespace alice \
-  --values ./helm/ics-validator/devnet-values.yaml \
-  --values ./helm/ics-validator/values/devnet-alice.yaml \
+  --values ./helm/ics-operator/devnet-values.yaml \
+  --values ./helm/ics-operator/values/devnet-alice.yaml \
   --set-string chain.genesis.inline="$(cat genesis.json)" \
   --set peers.persistent="{...}"
 ```
@@ -141,7 +141,7 @@ storage:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `validator.name` | Validator name | `validator` |
-| `validator.moniker` | Validator display name | `ICS Validator` |
+| `validator.moniker` | Validator display name | `ICS Operator` |
 | `validator.index` | HD derivation index | `0` |
 | `keys.type` | Key provision method | `mnemonic` |
 | `keys.mnemonic` | BIP39 mnemonic phrase | `""` |
@@ -221,7 +221,7 @@ storage:
 To upgrade a deployed validator:
 
 ```bash
-helm upgrade myvalidator ./helm/ics-validator \
+helm upgrade myvalidator ./helm/ics-operator \
   --namespace myvalidator \
   --reuse-values \
   --set chain.image="ghcr.io/cosmos/interchain-security:v7.0.2"

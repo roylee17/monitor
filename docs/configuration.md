@@ -158,7 +158,7 @@ When deployed via Helm, the monitor is configured through the following values:
 ```yaml
 validator:
   name: validator          # Name of the validator (e.g., alice, bob, charlie)
-  moniker: "ICS Validator" # Display name for the validator
+  moniker: "ICS Operator" # Display name for the validator
   index: 0                 # Index for HD key derivation (0 for alice, 1 for bob, etc.)
 ```
 
@@ -386,7 +386,7 @@ devnet:
 
 ```bash
 # Deploy with Helm
-helm install alice ./helm/ics-validator -f values-devnet.yaml
+helm install alice ./helm/ics-operator -f values-devnet.yaml
 ```
 
 ### Production Deployment

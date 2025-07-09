@@ -5,23 +5,23 @@ metadata:
   name: monitor
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: monitor
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "ics-validator.selectorLabels" . | nindent 6 }}
+      {{- include "ics-operator.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: monitor
   template:
     metadata:
       labels:
-        {{- include "ics-validator.selectorLabels" . | nindent 8 }}
+        {{- include "ics-operator.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: monitor
         validator: {{ .Values.validator.name }}
         role: monitor
     spec:
-      serviceAccountName: {{ include "ics-validator.serviceAccountName" . }}
+      serviceAccountName: {{ include "ics-operator.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -31,8 +31,8 @@ spec:
         args:
         - |
           echo "Waiting for validator to be ready..."
-          until curl -sf {{ include "ics-validator.rpcEndpoint" . }}/status > /dev/null 2>&1; do
-            echo "Waiting for validator at {{ include "ics-validator.rpcEndpoint" . }}..."
+          until curl -sf {{ include "ics-operator.rpcEndpoint" . }}/status > /dev/null 2>&1; do
+            echo "Waiting for validator at {{ include "ics-operator.rpcEndpoint" . }}..."
             sleep 2
           done
           echo "Validator is ready!"
@@ -62,7 +62,7 @@ spec:
           echo "guard cream sadness conduct invite crumble clock pudding hole grit liar hotel maid produce squeeze return argue turtle know drive eight casino maze host" | \
             monitor keys add {{ .Values.validator.name }} \
             --recover \
-            --hd-path "{{ include "ics-validator.hdPath" . }}" \
+            --hd-path "{{ include "ics-operator.hdPath" . }}" \
             --keyring-backend test \
             --keyring-dir /data/.provider \
             --interactive=false
@@ -89,7 +89,7 @@ spec:
         - "monitor"
         - "start"
         - "--node"
-        - {{ include "ics-validator.rpcEndpoint" . | quote }}
+        - {{ include "ics-operator.rpcEndpoint" . | quote }}
         - "--chain-id"
         - {{ .Values.chain.id | quote }}
         - "--home"
@@ -98,7 +98,7 @@ spec:
         - "test"
         {{- if .Values.monitor.providerEndpoints }}
         - "--provider-endpoints"
-        - {{ include "ics-validator.providerEndpoints" . | quote }}
+        - {{ include "ics-operator.providerEndpoints" . | quote }}
         {{- end }}
         - "--from"
         - {{ .Values.validator.name | quote }}
@@ -120,14 +120,14 @@ spec:
       - name: monitor-data
         {{- if .Values.storage.monitor.size }}
         persistentVolumeClaim:
-          claimName: {{ include "ics-validator.fullname" . }}-monitor-data
+          claimName: {{ include "ics-operator.fullname" . }}-monitor-data
         {{- else }}
         emptyDir: {}
         {{- end }}
       {{- if ne .Values.keys.type "existing-secret" }}
       - name: keys
         secret:
-          secretName: {{ include "ics-validator.fullname" . }}-keys
+          secretName: {{ include "ics-operator.fullname" . }}-keys
       {{- else }}
       - name: keys-external
         secret:

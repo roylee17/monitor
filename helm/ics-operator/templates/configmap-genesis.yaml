@@ -2,10 +2,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "ics-validator.fullname" . }}-genesis
+  name: {{ include "ics-operator.fullname" . }}-genesis
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: genesis
 data:
   {{- if eq .Values.chain.genesis.type "inline" }}
@@ -20,6 +20,6 @@ data:
     wget -O /genesis/genesis.json "{{ .Values.chain.genesis.url }}"
     echo "Genesis fetched successfully"
   {{- end }}
-  persistent_peers: {{ include "ics-validator.persistentPeers" . | quote }}
-  seeds: {{ include "ics-validator.seeds" . | quote }}
+  persistent_peers: {{ include "ics-operator.persistentPeers" . | quote }}
+  seeds: {{ include "ics-operator.seeds" . | quote }}
 {{- end }}

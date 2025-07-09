@@ -4,23 +4,23 @@ metadata:
   name: validator
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: validator
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "ics-validator.selectorLabels" . | nindent 6 }}
+      {{- include "ics-operator.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: validator
   template:
     metadata:
       labels:
-        {{- include "ics-validator.selectorLabels" . | nindent 8 }}
+        {{- include "ics-operator.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: validator
         validator: {{ .Values.validator.name }}
         role: validator
     spec:
-      serviceAccountName: {{ include "ics-validator.serviceAccountName" . }}
+      serviceAccountName: {{ include "ics-operator.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
@@ -71,7 +71,7 @@ spec:
             --recover \
             --keyring-backend test \
             --home /chain/.provider \
-            --hd-path "{{ include "ics-validator.hdPath" . }}"
+            --hd-path "{{ include "ics-operator.hdPath" . }}"
           
           # Generate node key and validator key
           {{ .Values.chain.binary }} init temp --home /tmp/temp 2>/dev/null || true
@@ -90,7 +90,7 @@ spec:
             --recover \
             --keyring-backend test \
             --home /chain/.provider \
-            --hd-path "{{ include "ics-validator.hdPath" . }}"
+            --hd-path "{{ include "ics-operator.hdPath" . }}"
           {{- else if eq .Values.keys.type "existing-secret" }}
           # Copy from existing secret
           cp /keys-external/priv_validator_key.json /chain/.provider/config/
@@ -98,8 +98,8 @@ spec:
           {{- end }}
           
           # Configure peers
-          PEERS="{{ include "ics-validator.persistentPeers" . }}"
-          SEEDS="{{ include "ics-validator.seeds" . }}"
+          PEERS="{{ include "ics-operator.persistentPeers" . }}"
+          SEEDS="{{ include "ics-operator.seeds" . }}"
           
           sed -i "s/persistent_peers = \"\"/persistent_peers = \"$PEERS\"/" /chain/.provider/config/config.toml
           sed -i "s/seeds = \"\"/seeds = \"$SEEDS\"/" /chain/.provider/config/config.toml
@@ -176,13 +176,13 @@ spec:
       - name: chain-data
         {{- if .Values.storage.validator.size }}
         persistentVolumeClaim:
-          claimName: {{ include "ics-validator.fullname" . }}-validator-data
+          claimName: {{ include "ics-operator.fullname" . }}-validator-data
         {{- else }}
         emptyDir: {}
         {{- end }}
       - name: genesis-config
         configMap:
-          name: {{ include "ics-validator.fullname" . }}-genesis
+          name: {{ include "ics-operator.fullname" . }}-genesis
       {{- if eq .Values.chain.genesis.type "url" }}
       - name: genesis-data
         emptyDir: {}
@@ -195,7 +195,7 @@ spec:
       {{- if ne .Values.keys.type "existing-secret" }}
       - name: keys
         secret:
-          secretName: {{ include "ics-validator.fullname" . }}-keys
+          secretName: {{ include "ics-operator.fullname" . }}-keys
       {{- else }}
       - name: keys-external
         secret:

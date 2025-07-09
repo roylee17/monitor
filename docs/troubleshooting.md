@@ -95,7 +95,7 @@ kubectl -n provider describe pod monitor-xxxxx
    ```bash
    # Check RBAC permissions
    kubectl auth can-i create namespace \
-     --as=system:serviceaccount:provider:ics-validator-monitor
+     --as=system:serviceaccount:provider:ics-operator-monitor
    ```
 
 ### Validator Won't Start
@@ -531,7 +531,7 @@ kubectl get events --all-namespaces --sort-by='.lastTimestamp' | tail -20
 kubectl -n provider get configmaps
 
 # Describe RBAC permissions
-kubectl describe clusterrole ics-validator-monitor
+kubectl describe clusterrole ics-operator-monitor
 
 # Port forward for local debugging
 kubectl -n provider port-forward svc/validator 26657:26657

@@ -3,10 +3,10 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "ics-validator.fullname" . }}-validator-data
+  name: {{ include "ics-operator.fullname" . }}-validator-data
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: validator
 spec:
   accessModes:
@@ -23,10 +23,10 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "ics-validator.fullname" . }}-monitor-data
+  name: {{ include "ics-operator.fullname" . }}-monitor-data
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ics-validator.labels" . | nindent 4 }}
+    {{- include "ics-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: monitor
 spec:
   accessModes:
