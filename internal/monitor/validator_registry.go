@@ -23,8 +23,8 @@ func NewValidatorRegistry(logger *slog.Logger) *ValidatorRegistry {
 
 // ValidatorEndpoint represents a validator's P2P endpoint information
 type ValidatorEndpoint struct {
-	Moniker  string
-	Address  string // The base address (IP or hostname) without port
+	Moniker string
+	Address string // The base address (IP or hostname) without port
 }
 
 // GetValidatorEndpoints queries all validators and extracts their P2P endpoints
@@ -38,7 +38,7 @@ func (r *ValidatorRegistry) GetValidatorEndpoints(ctx context.Context, stakingCl
 	}
 
 	endpoints := make(map[string]ValidatorEndpoint)
-	
+
 	for _, validator := range resp.Validators {
 		// Extract P2P endpoint from validator description
 		endpoint := r.extractP2PEndpoint(validator.Description)
@@ -66,22 +66,25 @@ func (r *ValidatorRegistry) GetValidatorEndpoints(ctx context.Context, stakingCl
 // extractP2PEndpoint extracts the P2P endpoint from validator description
 // Expected format: "p2p=host:port" or "p2p=host" in the details field
 func (r *ValidatorRegistry) extractP2PEndpoint(desc stakingtypes.Description) string {
-	// Look for p2p= prefix in details
+	// Look for p2p= in details (can be anywhere in the line)
 	lines := strings.Split(desc.Details, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "p2p=") {
-			endpoint := strings.TrimPrefix(line, "p2p=")
-			
+		// Check if line contains p2p= (not just starts with)
+		if idx := strings.Index(line, "p2p="); idx != -1 {
+			// Extract everything after p2p=
+			endpoint := line[idx+4:] // Skip "p2p="
+			endpoint = strings.TrimSpace(endpoint)
+
 			// Remove port if present (we'll use calculated ports)
 			if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
 				endpoint = endpoint[:idx]
 			}
-			
+
 			return endpoint
 		}
 	}
-	
+
 	// Also check in a JSON-like format
 	if strings.Contains(desc.Details, `"p2p":`) {
 		// Simple extraction for "p2p":"value" format
@@ -90,17 +93,17 @@ func (r *ValidatorRegistry) extractP2PEndpoint(desc stakingtypes.Description) st
 			end := strings.Index(desc.Details[start:], `"`)
 			if end > 0 {
 				endpoint := desc.Details[start : start+end]
-				
+
 				// Remove port if present
 				if idx := strings.LastIndex(endpoint, ":"); idx != -1 {
 					endpoint = endpoint[:idx]
 				}
-				
+
 				return endpoint
 			}
 		}
 	}
-	
+
 	return ""
 }
 
