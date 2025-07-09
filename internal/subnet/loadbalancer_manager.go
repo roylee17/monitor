@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -11,13 +13,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
 	// LoadBalancerName is the name of the shared LoadBalancer service
 	LoadBalancerName = "p2p-loadbalancer"
-	
+
 	// LoadBalancerNamespace is the namespace where the LoadBalancer exists
 	LoadBalancerNamespace = "provider"
 )
@@ -26,6 +29,10 @@ const (
 type LoadBalancerManager struct {
 	clientset kubernetes.Interface
 	logger    *slog.Logger
+
+	// Pod watching
+	watchers      map[string]context.CancelFunc
+	watchersMutex sync.Mutex
 }
 
 // NewLoadBalancerManager creates a new LoadBalancer manager
@@ -33,6 +40,7 @@ func NewLoadBalancerManager(clientset kubernetes.Interface, logger *slog.Logger)
 	return &LoadBalancerManager{
 		clientset: clientset,
 		logger:    logger,
+		watchers:  make(map[string]context.CancelFunc),
 	}
 }
 
@@ -71,7 +79,7 @@ func (m *LoadBalancerManager) EnsureLoadBalancerReady(ctx context.Context) (stri
 
 // AddConsumerPort adds a port to the LoadBalancer for a consumer chain
 func (m *LoadBalancerManager) AddConsumerPort(ctx context.Context, chainID string, port int32) error {
-	m.logger.Info("Adding port to LoadBalancer", 
+	m.logger.Info("Adding port to LoadBalancer",
 		"chain_id", chainID,
 		"port", port)
 
@@ -96,10 +104,10 @@ func (m *LoadBalancerManager) AddConsumerPort(ctx context.Context, chainID strin
 
 	// Apply the patch
 	_, err = m.clientset.CoreV1().Services(LoadBalancerNamespace).Patch(
-		ctx, 
-		LoadBalancerName, 
-		types.JSONPatchType, 
-		patchBytes, 
+		ctx,
+		LoadBalancerName,
+		types.JSONPatchType,
+		patchBytes,
 		metav1.PatchOptions{},
 	)
 	if err != nil {
@@ -108,24 +116,24 @@ func (m *LoadBalancerManager) AddConsumerPort(ctx context.Context, chainID strin
 			return fmt.Errorf("failed to patch LoadBalancer service: %w", err)
 		}
 		m.logger.Info("Port may already exist, checking...")
-		
+
 		// Check if port already exists
 		svc, getErr := m.clientset.CoreV1().Services(LoadBalancerNamespace).Get(ctx, LoadBalancerName, metav1.GetOptions{})
 		if getErr != nil {
 			return fmt.Errorf("failed to get LoadBalancer service: %w", getErr)
 		}
-		
+
 		for _, p := range svc.Spec.Ports {
 			if p.Port == port {
 				m.logger.Info("Port already exists in LoadBalancer", "port", port)
 				return nil
 			}
 		}
-		
+
 		return fmt.Errorf("failed to add port and port doesn't exist: %w", err)
 	}
 
-	m.logger.Info("Successfully added port to LoadBalancer", 
+	m.logger.Info("Successfully added port to LoadBalancer",
 		"chain_id", chainID,
 		"port", port)
 	return nil
@@ -133,7 +141,7 @@ func (m *LoadBalancerManager) AddConsumerPort(ctx context.Context, chainID strin
 
 // RemoveConsumerPort removes a port from the LoadBalancer when a consumer chain is deleted
 func (m *LoadBalancerManager) RemoveConsumerPort(ctx context.Context, chainID string, port int32) error {
-	m.logger.Info("Removing port from LoadBalancer", 
+	m.logger.Info("Removing port from LoadBalancer",
 		"chain_id", chainID,
 		"port", port)
 
@@ -172,17 +180,17 @@ func (m *LoadBalancerManager) RemoveConsumerPort(ctx context.Context, chainID st
 
 	// Apply the patch
 	_, err = m.clientset.CoreV1().Services(LoadBalancerNamespace).Patch(
-		ctx, 
-		LoadBalancerName, 
-		types.JSONPatchType, 
-		patchBytes, 
+		ctx,
+		LoadBalancerName,
+		types.JSONPatchType,
+		patchBytes,
 		metav1.PatchOptions{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to patch LoadBalancer service: %w", err)
 	}
 
-	m.logger.Info("Successfully removed port from LoadBalancer", 
+	m.logger.Info("Successfully removed port from LoadBalancer",
 		"chain_id", chainID,
 		"port", port)
 	return nil
@@ -256,8 +264,8 @@ func (m *LoadBalancerManager) DeleteEndpointSlice(ctx context.Context, chainID s
 	m.logger.Info("Deleting EndpointSlice for consumer chain", "chain_id", chainID)
 
 	err := m.clientset.DiscoveryV1().EndpointSlices(LoadBalancerNamespace).Delete(
-		ctx, 
-		fmt.Sprintf("consumer-%s", chainID), 
+		ctx,
+		fmt.Sprintf("consumer-%s", chainID),
 		metav1.DeleteOptions{},
 	)
 	if err != nil {
@@ -280,8 +288,8 @@ func (m *LoadBalancerManager) UpdateEndpointSlice(ctx context.Context, chainID s
 
 	// Get existing EndpointSlice
 	endpointSlice, err := m.clientset.DiscoveryV1().EndpointSlices(LoadBalancerNamespace).Get(
-		ctx, 
-		fmt.Sprintf("consumer-%s", chainID), 
+		ctx,
+		fmt.Sprintf("consumer-%s", chainID),
 		metav1.GetOptions{},
 	)
 	if err != nil {
@@ -323,4 +331,169 @@ func (m *LoadBalancerManager) UpdateEndpointSlice(ctx context.Context, chainID s
 
 	m.logger.Info("Successfully updated EndpointSlice", "chain_id", chainID)
 	return nil
+}
+
+// StartPodWatcher starts watching pods in a namespace for IP changes
+func (m *LoadBalancerManager) StartPodWatcher(ctx context.Context, chainID, namespace string) error {
+	m.watchersMutex.Lock()
+	defer m.watchersMutex.Unlock()
+
+	// Check if already watching
+	if _, exists := m.watchers[chainID]; exists {
+		m.logger.Debug("Already watching pods for chain", "chain_id", chainID)
+		return nil
+	}
+
+	// Create a cancellable context for this watcher
+	watchCtx, cancel := context.WithCancel(ctx)
+	m.watchers[chainID] = cancel
+
+	// Start the watcher goroutine
+	go m.watchPods(watchCtx, chainID, namespace)
+
+	m.logger.Info("Started pod watcher for consumer chain",
+		"chain_id", chainID,
+		"namespace", namespace)
+	return nil
+}
+
+// StopPodWatcher stops watching pods for a specific chain
+func (m *LoadBalancerManager) StopPodWatcher(chainID string) {
+	m.watchersMutex.Lock()
+	defer m.watchersMutex.Unlock()
+
+	if cancel, exists := m.watchers[chainID]; exists {
+		m.logger.Info("Stopping pod watcher", "chain_id", chainID)
+		cancel()
+		delete(m.watchers, chainID)
+	}
+}
+
+// StopAllWatchers stops all pod watchers
+func (m *LoadBalancerManager) StopAllWatchers() {
+	m.watchersMutex.Lock()
+	defer m.watchersMutex.Unlock()
+
+	m.logger.Info("Stopping all pod watchers", "count", len(m.watchers))
+	for chainID, cancel := range m.watchers {
+		m.logger.Debug("Stopping watcher", "chain_id", chainID)
+		cancel()
+	}
+	m.watchers = make(map[string]context.CancelFunc)
+}
+
+// watchPods watches for pod events in a namespace
+func (m *LoadBalancerManager) watchPods(ctx context.Context, chainID, namespace string) {
+	m.logger.Info("Pod watcher started", "chain_id", chainID, "namespace", namespace)
+	defer m.logger.Info("Pod watcher stopped", "chain_id", chainID)
+
+	// Retry logic for watch reconnection
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Create watch with label selector for consumer pods
+		watchOpts := metav1.ListOptions{
+			LabelSelector: "app=validator",
+			Watch:         true,
+		}
+
+		watcher, err := m.clientset.CoreV1().Pods(namespace).Watch(ctx, watchOpts)
+		if err != nil {
+			m.logger.Error("Failed to create pod watcher",
+				"chain_id", chainID,
+				"error", err)
+			// Retry after delay
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+				continue
+			}
+		}
+
+		// Process watch events
+		m.processWatchEvents(ctx, watcher, chainID, namespace)
+
+		// Watcher closed, retry after a short delay
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
+			m.logger.Debug("Restarting pod watcher", "chain_id", chainID)
+		}
+	}
+}
+
+// processWatchEvents processes events from the pod watcher
+func (m *LoadBalancerManager) processWatchEvents(ctx context.Context, watcher watch.Interface, chainID, namespace string) {
+	defer watcher.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				m.logger.Debug("Watch channel closed", "chain_id", chainID)
+				return
+			}
+
+			pod, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				m.logger.Warn("Unexpected object type in watch event", "chain_id", chainID)
+				continue
+			}
+
+			m.handlePodEvent(ctx, event.Type, pod, chainID, namespace)
+		}
+	}
+}
+
+// handlePodEvent handles individual pod events
+func (m *LoadBalancerManager) handlePodEvent(ctx context.Context, eventType watch.EventType, pod *corev1.Pod, chainID, namespace string) {
+	m.logger.Debug("Pod event received",
+		"event_type", eventType,
+		"pod", pod.Name,
+		"chain_id", chainID,
+		"pod_ip", pod.Status.PodIP,
+		"phase", pod.Status.Phase)
+
+	switch eventType {
+	case watch.Added, watch.Modified:
+		// Check if pod is ready and has an IP
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" && isPodReady(pod) {
+			// Update EndpointSlice with new pod IP
+			if err := m.UpdateEndpointSlice(ctx, chainID, namespace, pod.Status.PodIP); err != nil {
+				m.logger.Error("Failed to update EndpointSlice on pod event",
+					"chain_id", chainID,
+					"pod", pod.Name,
+					"error", err)
+			} else {
+				m.logger.Info("EndpointSlice updated for pod event",
+					"event_type", eventType,
+					"chain_id", chainID,
+					"pod", pod.Name,
+					"new_ip", pod.Status.PodIP)
+			}
+		}
+	case watch.Deleted:
+		// Pod deleted - EndpointSlice will be updated when new pod is created
+		m.logger.Info("Pod deleted, waiting for replacement",
+			"chain_id", chainID,
+			"pod", pod.Name)
+	}
+}
+
+// isPodReady checks if a pod is in Ready condition
+func isPodReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }

@@ -97,6 +97,9 @@ func (m *K8sManager) Close() error {
 	// Clear the map
 	m.tasks = make(map[string]context.CancelFunc)
 
+	// Stop all pod watchers
+	m.lbManager.StopAllWatchers()
+
 	return nil
 }
 
@@ -463,6 +466,18 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 			"pod_ip", podIP)
 	}
 
+	// Start watching pods for automatic EndpointSlice updates
+	if err := m.lbManager.StartPodWatcher(ctx, chainID, namespace); err != nil {
+		m.logger.Error("Failed to start pod watcher",
+			"chain_id", chainID,
+			"error", err)
+		// Non-critical error - continue
+	} else {
+		m.logger.Info("Started automatic pod IP tracking for EndpointSlice updates",
+			"chain_id", chainID,
+			"namespace", namespace)
+	}
+
 	// Check deployment status and return appropriate error
 	if deployErr.HasErrors() {
 		m.logger.Warn("Consumer chain deployed with errors",
@@ -509,6 +524,9 @@ func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) er
 		delete(m.tasks, taskID)
 	}
 	m.tasksMutex.Unlock()
+
+	// Stop pod watcher for this chain
+	m.lbManager.StopPodWatcher(chainID)
 
 	// Calculate port to remove from LoadBalancer
 	ports, err := CalculatePorts(chainID)
@@ -756,6 +774,19 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 			"chain_id", chainID,
 			"port", p2pPort,
 			"pod_ip", podIP)
+
+		// Start pod watcher for automatic updates
+		if err := m.lbManager.StartPodWatcher(ctx, chainID, namespace); err != nil {
+			m.logger.Error("Failed to start pod watcher in background task",
+				"chain_id", chainID,
+				"error", err)
+			// Non-critical - LoadBalancer is configured
+		} else {
+			m.logger.Info("Started automatic pod IP tracking in background task",
+				"chain_id", chainID,
+				"namespace", namespace)
+		}
+
 		return nil
 	})
 
