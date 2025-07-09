@@ -194,7 +194,7 @@ shell: ## Get shell access (TARGET=alice|bob|charlie)
 # ============================================
 create-consumer: ## Create a test consumer chain
 	@echo "📝 Creating consumer chain..."
-	@$(SCRIPTS_DIR)/lifecycle/create-consumer.sh -s 10
+	@$(SCRIPTS_DIR)/lifecycle/create-consumer.sh -s 15
 
 remove-consumer: ## Remove a consumer chain (CONSUMER_ID=0)
 	@CONSUMER_ID=$${CONSUMER_ID:-0}; \
