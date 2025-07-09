@@ -16,7 +16,7 @@ source "${SCRIPT_DIR}/utils/logging.sh"
 
 # Configuration
 VALIDATORS=("alice" "bob" "charlie")
-ASSETS_DIR="$PROJECT_ROOT/testnet/assets"
+ASSETS_DIR="$PROJECT_ROOT/.testnet/assets"
 
 # Check if helm is installed
 check_helm() {
@@ -29,12 +29,12 @@ check_helm() {
 # Check if assets exist
 check_assets() {
     if [ ! -d "$ASSETS_DIR" ]; then
-        error "Assets directory not found. Run testnet-coordinator.sh first."
+        error "Assets directory not found. Run generate-testnet.sh first."
     fi
-    
+
     # Check for genesis file
     if [ ! -f "$ASSETS_DIR/alice/config/genesis.json" ]; then
-        error "Genesis file not found. Run testnet-coordinator.sh first."
+        error "Genesis file not found. Run generate-testnet.sh first."
     fi
 }
 
@@ -53,24 +53,24 @@ check_clusters() {
 build_peer_list_for() {
     local current_validator=$1
     local peers=""
-    
+
     if [ -f "$ASSETS_DIR/node_ids.txt" ]; then
         # Use host gateway IP (accessible from within Kind containers)
         local host_gateway="192.168.97.1"
-        
+
         while IFS=: read -r name node_id; do
             # Skip the current validator (don't connect to itself)
             [ "$name" = "$current_validator" ] && continue
-            
+
             # Map validator names to their host-exposed ports
             local port
             case "$name" in
                 alice) port=26656 ;;  # alice's P2P port on host
-                bob) port=26666 ;;    # bob's P2P port on host  
+                bob) port=26666 ;;    # bob's P2P port on host
                 charlie) port=26676 ;; # charlie's P2P port on host
                 *) continue ;;  # Skip unknown validators
             esac
-            
+
             if [ -n "$peers" ]; then
                 peers+=","
             fi
@@ -78,7 +78,7 @@ build_peer_list_for() {
             peers+="${node_id}@${host_gateway}:${port}"
         done < "$ASSETS_DIR/node_ids.txt"
     fi
-    
+
     echo "$peers"
 }
 
@@ -87,16 +87,16 @@ deploy_validator() {
     local validator=$1
     local namespace="provider"  # Use same namespace as old deployment
     local context="kind-${validator}-cluster"
-    
+
     log_info "Deploying $validator to cluster $context"
-    
+
     # Build peers list excluding self
     local peers=$(build_peer_list_for "$validator")
     log_info "Peers for $validator: $peers"
-    
+
     # Create namespace
     kubectl --context "$context" create namespace "$namespace" --dry-run=client -o yaml | kubectl --context "$context" apply -f -
-    
+
     # Create a temporary values file with genesis and keys
     local temp_values=$(mktemp)
     cat > "$temp_values" <<EOF
@@ -115,7 +115,7 @@ peers:
   persistent:
 $(echo "$peers" | tr ',' '\n' | sed 's/^/    - "/' | sed 's/$/"/')
 EOF
-    
+
     # Deploy using Helm
     helm upgrade --install "$validator" "$HELM_CHART" \
         --namespace "$namespace" \
@@ -123,10 +123,10 @@ EOF
         --values "$HELM_CHART/testnet-values.yaml" \
         --values "$HELM_CHART/values/testnet-${validator}.yaml" \
         --values "$temp_values"
-    
+
     local result=$?
     rm -f "$temp_values"
-    
+
     if [ $result -eq 0 ]; then
         log_info "Successfully deployed $validator"
     else
@@ -139,12 +139,12 @@ check_validator_status() {
     local validator=$1
     local namespace="provider"  # Use same namespace as deployment
     local context="kind-${validator}-cluster"
-    
+
     log_info "Checking status for $validator"
-    
+
     # Get pod status
     kubectl --context "$context" -n "$namespace" get pods
-    
+
     # Check if validator is running
     local validator_pod=$(kubectl --context "$context" -n "$namespace" get pods -l app.kubernetes.io/component=validator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -n "$validator_pod" ]; then
@@ -157,33 +157,33 @@ check_validator_status() {
 # Main execution
 main() {
     log_info "Starting testnet deployment with Helm"
-    
+
     # Run checks
     check_helm
     check_assets
     check_clusters
-    
+
     # Load Docker image into Kind clusters
     log_info "Loading monitor image into Kind clusters..."
     for validator in "${VALIDATORS[@]}"; do
         kind load docker-image ics-monitor:latest --name "${validator}-cluster"
     done
-    
+
     # Deploy each validator
     for validator in "${VALIDATORS[@]}"; do
         deploy_validator "$validator"
     done
-    
+
     # Wait a bit for services to stabilize
     log_info "Waiting for services to stabilize..."
     sleep 10
-    
+
     # Check status
     log_info "Checking deployment status..."
     for validator in "${VALIDATORS[@]}"; do
         check_validator_status "$validator"
     done
-    
+
     log_info "Testnet deployment complete!"
     log_info ""
     log_info "To check status:"

@@ -10,7 +10,7 @@
 ICS_VERSION ?= v7.0.1
 
 # Directories
-TESTNET_DIR := testnet
+TESTNET_DIR := ./testnet
 SCRIPTS_DIR := scripts
 
 # Docker settings
@@ -30,11 +30,11 @@ VALIDATOR_COUNT := 3
 # Phony targets
 # ============================================
 .PHONY: help clean clean-consumers clean-assets quick-start
-.PHONY: docker-build docker-build-dev
-.PHONY: generate-testnet create-clusters delete-clusters deploy reset deploy-dev reset-dev register-endpoints
+.PHONY: docker-build
+.PHONY: generate-testnet create-clusters delete-clusters deploy reset register-endpoints
 .PHONY: status status-verbose logs shell
 .PHONY: create-consumer list-consumers show-consumer remove-consumer
-.PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs verify-gaps
+.PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs
 
 # ============================================
 # Help
@@ -70,7 +70,6 @@ clean: delete-clusters clean-assets ## Clean everything
 clean-assets: ## Clean generated assets and manifests
 	@echo "🧹 Cleaning generated files..."
 	@rm -rf $(TESTNET_DIR)/assets
-	@rm -rf $(TESTNET_DIR)/keys-backup
 	@echo "✅ Clean complete"
 
 clean-consumers: ## Clean consumer chain namespaces
@@ -89,20 +88,12 @@ docker-build: ## Build monitor Docker image
 	@DOCKER_BUILDKIT=1 docker build -t $(MONITOR_IMAGE) .
 	@echo "✅ Docker image ready"
 
-docker-build-dev: ## Fast Docker build for development (with caching)
-	@echo "🚀 Fast build with caching for $(MONITOR_IMAGE)..."
-	@DOCKER_BUILDKIT=1 docker build \
-		--build-arg BUILDKIT_INLINE_CACHE=1 \
-		--cache-from $(MONITOR_IMAGE) \
-		-t $(MONITOR_IMAGE) .
-	@echo "✅ Docker image ready (dev build)"
-
 # ============================================
 # Deployment targets
 # ============================================
 generate-testnet: ## Generate testnet configuration
 	@echo "⚙️  Generating testnet configuration..."
-	@$(SCRIPTS_DIR)/testnet-coordinator.sh -t '2025-01-01T00:00:00Z' -s
+	@$(SCRIPTS_DIR)/testnet/generate-testnet.sh -t '2025-01-01T00:00:00Z' -s
 	@echo "✅ Testnet configuration generated"
 
 create-clusters: ## Create 3 Kind clusters
@@ -132,17 +123,6 @@ reset: ## Full reset and redeploy
 	@$(MAKE) -s delete-clusters
 	@$(MAKE) -s clean-assets
 	@$(MAKE) -s deploy
-
-deploy-dev: create-clusters docker-build-dev generate-testnet ## Fast deployment for development
-	@echo "🚀 Fast deploying testnet with Helm..."
-	@$(SCRIPTS_DIR)/deploy-testnet-helm.sh
-	@echo ""
-	@echo "📝 Dev deployment complete!"
-
-reset-dev: ## Fast reset for development (reuses docker cache)
-	@$(MAKE) -s delete-clusters
-	@$(MAKE) -s clean-assets
-	@$(MAKE) -s deploy-dev
 
 deploy-metallb:
 	@echo "📦 Installing MetalLB for LoadBalancer support..."
@@ -219,17 +199,12 @@ remove-consumer: ## Remove a consumer chain (CONSUMER_ID=0)
 	echo "🗑️  Removing consumer chain $$CONSUMER_ID..."; \
 	$(SCRIPTS_DIR)/lifecycle/remove-consumer.sh "$$CONSUMER_ID"
 
-
 list-consumers: ## List all consumer chains
 	@$(SCRIPTS_DIR)/lifecycle/list-consumers.sh
 
 show-consumer: ## Show consumer chain info (CONSUMER_ID=0)
 	@CONSUMER_ID=$${CONSUMER_ID:-0}; \
 	$(SCRIPTS_DIR)/lifecycle/list-consumers.sh "$$CONSUMER_ID"
-
-# ============================================
-# Infrastructure Management
-# ============================================
 
 # ============================================
 # Consumer chain detailed queries

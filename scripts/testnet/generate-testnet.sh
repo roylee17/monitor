@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Testnet Coordinator Script
-# 
+#
 # This script performs a complete genesis ceremony for a 3-validator testnet.
 # It handles three types of keys:
 #
@@ -27,14 +27,14 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../" && pwd)"
 
 # Configuration
 CHAIN_ID="provider-1"
 DENOM="stake"
 BINARY="interchain-security-pd"
-ASSETS_DIR="$PROJECT_ROOT/testnet/assets"
-KEYS_BACKUP_DIR="$PROJECT_ROOT/testnet/keys-backup"
+ASSETS_DIR="$PROJECT_ROOT/.testnet/assets"
+KEYS_BACKUP_DIR="$PROJECT_ROOT/.testnet/keys-backup"
 
 # Validator names
 VALIDATORS=("alice" "bob" "charlie")
@@ -45,7 +45,7 @@ SAVE_KEYS=false        # Set via command line flag (-s to save keys)
 
 # Source common functions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/utils/logging.sh"
+source "${SCRIPT_DIR}/../utils/logging.sh"
 
 # Suppress sonic warnings from the Go binary
 export GODEBUG=asyncpreemptoff=1
@@ -114,13 +114,13 @@ save_keys() {
         cp "$home_dir/config/node_key.json" "$KEYS_BACKUP_DIR/$validator/"
         cp "$home_dir/config/priv_validator_key.json" "$KEYS_BACKUP_DIR/$validator/"
         cp "$home_dir/data/priv_validator_state.json" "$KEYS_BACKUP_DIR/$validator/" 2>/dev/null || true
-        
+
         # Also save keyring for idempotency
         if [ -d "$home_dir/keyring-test" ]; then
             mkdir -p "$KEYS_BACKUP_DIR/$validator/keyring-test"
             cp -r "$home_dir/keyring-test/"* "$KEYS_BACKUP_DIR/$validator/keyring-test/" 2>/dev/null || true
         fi
-        
+
         log_info "  Saved P2P, consensus keys, and keyring for $validator to backup directory"
     fi
 }
@@ -138,13 +138,13 @@ restore_keys() {
         cp "$KEYS_BACKUP_DIR/$validator/node_key.json" "$home_dir/config/"
         cp "$KEYS_BACKUP_DIR/$validator/priv_validator_key.json" "$home_dir/config/"
         cp "$KEYS_BACKUP_DIR/$validator/priv_validator_state.json" "$home_dir/data/" 2>/dev/null || true
-        
+
         # Also restore keyring if exists
         if [ -d "$KEYS_BACKUP_DIR/$validator/keyring-test" ]; then
             mkdir -p "$home_dir/keyring-test"
             cp -r "$KEYS_BACKUP_DIR/$validator/keyring-test/"* "$home_dir/keyring-test/" 2>/dev/null || true
         fi
-        
+
         log_info "  Restored P2P, consensus keys, and keyring for $validator from backup"
         return 0
     fi

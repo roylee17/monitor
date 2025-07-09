@@ -13,20 +13,12 @@ get_repo_root() {
 # Export common variables
 export REPO_ROOT=$(get_repo_root)
 export SCRIPTS_DIR="$REPO_ROOT/scripts"
-export K8S_DIR="$REPO_ROOT/k8s"
-export ASSETS_DIR="$K8S_DIR/testnet/assets"
+export ASSETS_DIR=".testnet/assets"
 
 # Default values
 export DEFAULT_CHAIN_ID="provider"
 export DEFAULT_NODE_URL="http://localhost:26657"
 export DEFAULT_KEYRING_BACKEND="test"
-
-# Color codes for output
-export RED='\033[0;31m'
-export GREEN='\033[0;32m'
-export YELLOW='\033[1;33m'
-export BLUE='\033[0;34m'
-export NC='\033[0m' # No Color
 
 # Check if a command exists
 command_exists() {
@@ -54,7 +46,7 @@ cluster_exists() {
 get_validator_address() {
     local validator_name="$1"
     local cluster_name="${2:-$validator_name}"
-    
+
     switch_to_cluster "$cluster_name"
     kubectl exec -n provider deployment/validator -- \
         interchain-security-pd keys show "$validator_name" \
@@ -65,7 +57,7 @@ get_validator_address() {
 exec_in_validator() {
     local cluster_name="$1"
     shift
-    
+
     switch_to_cluster "$cluster_name"
     kubectl exec -n provider deployment/validator -- "$@"
 }
