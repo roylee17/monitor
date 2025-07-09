@@ -9,6 +9,7 @@ set -e
 THIS_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$THIS_SCRIPT_DIR/../utils/common.sh"
 source "$THIS_SCRIPT_DIR/../utils/logging.sh"
+source "$THIS_SCRIPT_DIR/../lifecycle/consumer-utils.sh"
 
 # Binary and chain configuration
 BINARY="${BINARY:-interchain-security-pd}"
@@ -59,7 +60,8 @@ update_validator_endpoint() {
 p2p=$endpoint"
     
     # Create the transaction to edit validator
-    kubectl --context "$context" -n provider exec deployment/validator -- \
+    local tx_output
+    tx_output=$(kubectl --context "$context" -n provider exec deployment/validator -c validator -- \
         "$BINARY" tx staking edit-validator \
         --details "$description" \
         --from "$validator" \
@@ -67,12 +69,21 @@ p2p=$endpoint"
         --keyring-backend test \
         --home /chain/.provider \
         --yes \
-        --output json || {
+        --output json) || {
         log_error "Failed to update validator $validator"
         return 1
     }
     
-    log_info "Successfully updated $validator"
+    # Extract and return transaction hash
+    local tx_hash
+    tx_hash=$(echo "$tx_output" | jq -r '.txhash // empty')
+    if [ -n "$tx_hash" ]; then
+        echo "$tx_hash"
+        return 0
+    else
+        log_error "Failed to extract transaction hash"
+        return 1
+    fi
 }
 
 # Query validator to verify endpoint
@@ -99,13 +110,41 @@ verify_validator_endpoint() {
     fi
 }
 
+# Wait for chain to be ready by checking status
+wait_for_chain_ready() {
+    local validator=$1
+    local context="kind-${validator}-cluster"
+    local max_attempts=30
+    local attempt=0
+    
+    log_info "Waiting for $validator chain to be ready..."
+    
+    while [ $attempt -lt $max_attempts ]; do
+        # Check if we can query the chain status
+        if kubectl --context "$context" -n provider exec deployment/validator -c validator -- \
+            "$BINARY" status --home /chain/.provider 2>/dev/null | grep -q "latest_block_height"; then
+            log_info "$validator chain is ready"
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        echo -n "."
+        sleep 1
+    done
+    echo ""
+    
+    log_error "$validator chain did not become ready in time"
+    return 1
+}
+
 # Main execution
 main() {
     log_info "Registering validator P2P endpoints..."
     
-    # Wait for chain to be ready
-    log_info "Waiting for chain to be ready..."
-    sleep 5
+    # Wait for all validator chains to be ready
+    for validator in "${VALIDATORS[@]}"; do
+        wait_for_chain_ready "$validator"
+    done
     
     # Wait for LoadBalancers to get external IPs
     log_info "Waiting for LoadBalancer services to get external endpoints..."
@@ -113,6 +152,7 @@ main() {
         local context="kind-${validator}-cluster"
         local attempts=0
         local max_attempts=30
+        local wait_time=1
         
         while [ $attempts -lt $max_attempts ]; do
             local endpoint
@@ -129,7 +169,9 @@ main() {
                 log_error "LoadBalancer for $validator did not get external endpoint in time"
             else
                 echo -n "."
-                sleep 2
+                sleep $wait_time
+                # Exponential backoff: double wait time up to 8 seconds
+                wait_time=$((wait_time < 8 ? wait_time * 2 : wait_time))
             fi
         done
     done
@@ -147,11 +189,14 @@ main() {
         
         log_info "Validator $validator LoadBalancer endpoint: $lb_endpoint"
         
-        # Register the endpoint
-        update_validator_endpoint "$validator" "$lb_endpoint"
-        
-        # Wait for transaction to be processed
-        sleep 2
+        # Register the endpoint and wait for confirmation
+        local tx_hash
+        tx_hash=$(update_validator_endpoint "$validator" "$lb_endpoint")
+        if [ -n "$tx_hash" ]; then
+            # Wait for transaction to be confirmed
+            wait_for_tx "$tx_hash" "deployment/validator" "provider" 10 >/dev/null
+            log_info "Transaction confirmed for $validator"
+        fi
     done
     
     # Verify all validators
