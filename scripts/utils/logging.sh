@@ -7,6 +7,23 @@ if [[ -z "$REPO_ROOT" ]]; then
     source "$SCRIPT_DIR/common.sh"
 fi
 
+# Define colors for terminal output
+if [[ -t 1 ]]; then
+    # Terminal supports colors
+    export RED='\033[0;31m'
+    export GREEN='\033[0;32m'
+    export YELLOW='\033[0;33m'
+    export BLUE='\033[0;34m'
+    export NC='\033[0m'  # No Color
+else
+    # No color support
+    export RED=''
+    export GREEN=''
+    export YELLOW=''
+    export BLUE=''
+    export NC=''
+fi
+
 # Log levels
 export LOG_LEVEL_DEBUG=0
 export LOG_LEVEL_INFO=1
@@ -41,10 +58,10 @@ log_message() {
     if [[ $numeric_level -ge $CURRENT_LOG_LEVEL ]]; then
         if [[ -t 1 ]]; then
             # Terminal output with color
-            echo -e "${color}[${prefix}]${NC} ${message}"
+            printf "${color}[${prefix}]${NC} %s\n" "${message}"
         else
             # Non-terminal output without color
-            echo "[$(get_timestamp)] [${prefix}] ${message}"
+            printf "[%s] [%s] %s\n" "$(get_timestamp)" "${prefix}" "${message}"
         fi
     fi
 }
