@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,7 +124,7 @@ func (u *ConsumerChainUpdater) updateConsumerChain(ctx context.Context, consumer
 	var updateErrors []error
 	for _, validatorName := range validators {
 		namespace := fmt.Sprintf("%s-%s", validatorName, consumerChainID)
-		
+
 		u.logger.Debug("Updating consumer chain in namespace",
 			"namespace", namespace,
 			"validator", validatorName,
@@ -177,7 +177,7 @@ func (u *ConsumerChainUpdater) updateConsumerChain(ctx context.Context, consumer
 // updateInitScriptConfigMap updates the persistent_peers in the init script ConfigMap
 func (u *ConsumerChainUpdater) updateInitScriptConfigMap(ctx context.Context, namespace, chainID string) error {
 	configMapName := "init-script"
-	
+
 	// Get the existing ConfigMap
 	cm, err := u.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
 	if err != nil {
@@ -217,7 +217,7 @@ func (u *ConsumerChainUpdater) updateInitScriptConfigMap(ctx context.Context, na
 
 	// Update the ConfigMap
 	cm.Data["init.sh"] = strings.Join(lines, "\n")
-	
+
 	_, err = u.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, cm, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to update ConfigMap: %w", err)
@@ -502,7 +502,7 @@ func (u *ConsumerChainUpdater) calculatePeersToAdd(current map[string]string, ne
 			continue
 		}
 		nodeID := parts[0]
-		
+
 		// Skip empty node IDs
 		if nodeID == "" {
 			continue
@@ -513,7 +513,7 @@ func (u *ConsumerChainUpdater) calculatePeersToAdd(current map[string]string, ne
 			toAdd = append(toAdd, newPeer)
 		}
 	}
-	
+
 	// Return empty slice instead of nil for consistency
 	if len(toAdd) == 0 {
 		return []string{}
@@ -526,7 +526,7 @@ func (u *ConsumerChainUpdater) calculatePeersToAdd(current map[string]string, ne
 func (u *ConsumerChainUpdater) addPeerViaRPC(rpcEndpoint, peer string) error {
 	// Tendermint expects URL-encoded array
 	url := fmt.Sprintf("%s/dial_peers?persistent=true&peers=[\"%s\"]", rpcEndpoint, peer)
-	
+
 	resp, err := u.httpClient.Post(url, "application/json", nil)
 	if err != nil {
 		return fmt.Errorf("failed to dial peer: %w", err)

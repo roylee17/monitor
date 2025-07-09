@@ -12,7 +12,7 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/cometbft/cometbft/types"
-	"github.com/cosmos/interchain-security-monitor/internal/constants"
+	"github.com/sourcenetwork/ics-operator/internal/constants"
 )
 
 // WebSocketMonitor implements EventMonitor using WebSocket subscriptions
@@ -32,12 +32,12 @@ func NewWebSocketMonitor(wsURL string, logger *slog.Logger) (*WebSocketMonitor, 
 	} else if strings.HasPrefix(baseURL, "wss://") {
 		baseURL = "tcp://" + baseURL[6:]
 	}
-	
+
 	// Remove any trailing /websocket as rpcclient will add it
 	baseURL = strings.TrimSuffix(baseURL, "/websocket")
-	
+
 	logger.Info("Creating RPC client", "input_url", wsURL, "tcp_url", baseURL)
-	
+
 	rpcClient, err := rpcclient.New(baseURL, "/websocket")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create RPC client: %w", err)
@@ -65,7 +65,7 @@ func (m *WebSocketMonitor) Start(ctx context.Context, processor *EventProcessor)
 	if err != nil {
 		m.logger.Error("Failed to get node status", "error", err)
 	} else {
-		m.logger.Info("Connected to node", 
+		m.logger.Info("Connected to node",
 			"chain_id", status.NodeInfo.Network,
 			"latest_block", status.SyncInfo.LatestBlockHeight)
 	}
@@ -115,7 +115,7 @@ func (m *WebSocketMonitor) Start(ctx context.Context, processor *EventProcessor)
 			m.handleBlockEvent(blockEvent)
 
 		case <-statusTicker.C:
-			m.logger.Info("WebSocket monitor status", 
+			m.logger.Info("WebSocket monitor status",
 				"tx_events", eventCount,
 				"block_events", blockCount,
 				"connected", m.rpcClient.IsRunning())
@@ -152,17 +152,17 @@ func (m *WebSocketMonitor) handleTxEvent(ctx context.Context, event coretypes.Re
 	}
 
 	// Process each event in the transaction
-	m.logger.Info("Processing transaction", 
+	m.logger.Info("Processing transaction",
 		"height", eventData.Height,
 		"num_events", len(eventData.Result.Events))
-		
+
 	for _, txEvent := range eventData.Result.Events {
 		// Enhanced logging to debug missing events
 		attrs := make(map[string]string)
 		for _, attr := range txEvent.Attributes {
 			attrs[attr.Key] = attr.Value
 		}
-		
+
 		// Log ALL events to understand what's being emitted
 		m.logger.Info("Transaction event detected",
 			"type", txEvent.Type,
@@ -207,13 +207,13 @@ func (m *WebSocketMonitor) handleBlockEvent(event coretypes.ResultEvent) {
 func (m *WebSocketMonitor) isRelevantEvent(eventType string) bool {
 	// Only monitor events that actually exist and provide value
 	relevantEvents := []string{
-		"message",           // For transaction messages
-		"create_consumer",   // When consumer is created
-		"update_consumer",   // When consumer parameters are updated
-		"remove_consumer",   // When consumer removal is initiated
-		"opt_in",           // Validator opt-in events
-		"opt_out",          // Validator opt-out events
-		"edit_validator",   // Validator description updates (includes P2P endpoints)
+		"message",         // For transaction messages
+		"create_consumer", // When consumer is created
+		"update_consumer", // When consumer parameters are updated
+		"remove_consumer", // When consumer removal is initiated
+		"opt_in",          // Validator opt-in events
+		"opt_out",         // Validator opt-out events
+		"edit_validator",  // Validator description updates (includes P2P endpoints)
 	}
 
 	for _, relevant := range relevantEvents {

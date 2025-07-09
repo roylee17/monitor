@@ -17,9 +17,9 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/query"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
-	"github.com/cosmos/interchain-security-monitor/internal/selector"
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
-	"github.com/cosmos/interchain-security-monitor/internal/transaction"
+	"github.com/sourcenetwork/ics-operator/internal/selector"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/transaction"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

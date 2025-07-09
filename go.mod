@@ -1,4 +1,4 @@
-module github.com/cosmos/interchain-security-monitor
+module github.com/sourcenetwork/ics-operator
 
 go 1.23.6
 

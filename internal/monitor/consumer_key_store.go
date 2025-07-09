@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,7 +49,7 @@ func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *subnet.Co
 
 	// Store in Kubernetes ConfigMap for persistence
 	configMapName := fmt.Sprintf("consumer-keys-%s", info.ConsumerID)
-	
+
 	// Try to get existing ConfigMap
 	cm, err := s.clientset.CoreV1().ConfigMaps(s.namespace).Get(ctx, configMapName, metav1.GetOptions{})
 	if err != nil {
@@ -123,11 +123,11 @@ func (s *ConsumerKeyStore) StoreConsumerKey(ctx context.Context, info *subnet.Co
 		} else {
 			_, err = s.clientset.CoreV1().Secrets(s.namespace).Update(ctx, secret, metav1.UpdateOptions{})
 		}
-		
+
 		if err != nil {
 			return fmt.Errorf("failed to store private key in Secret: %w", err)
 		}
-		
+
 		s.logger.Info("Stored consumer private key in Secret",
 			"secret_name", secretName,
 			"consumer_id", info.ConsumerID,
@@ -176,19 +176,19 @@ func (s *ConsumerKeyStore) GetConsumerKey(consumerID, validatorName string) (*su
 		if err := json.Unmarshal([]byte(keyData), &info); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal key info: %w", err)
 		}
-		
+
 		// Try to load private key JSON from Secret
 		privKeyJSON, _ := s.loadPrivateKeyJSON(consumerID, validatorName)
 		if privKeyJSON != "" {
 			info.PrivValidatorKeyJSON = privKeyJSON
 		}
-		
+
 		// Update cache
 		if s.cache[consumerID] == nil {
 			s.cache[consumerID] = make(map[string]*subnet.ConsumerKeyInfo)
 		}
 		s.cache[consumerID][validatorName] = &info
-		
+
 		return &info, nil
 	}
 
@@ -278,17 +278,17 @@ func (s *ConsumerKeyStore) LoadFromConfigMaps(ctx context.Context) error {
 // loadPrivateKeyJSON loads the private key JSON from Secret
 func (s *ConsumerKeyStore) loadPrivateKeyJSON(consumerID, validatorName string) (string, error) {
 	secretName := fmt.Sprintf("consumer-key-%s-%s", consumerID, validatorName)
-	
+
 	secret, err := s.clientset.CoreV1().Secrets(s.namespace).Get(context.Background(), secretName, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get secret: %w", err)
 	}
-	
+
 	privKeyData, ok := secret.Data["priv_validator_key.json"]
 	if !ok {
 		return "", fmt.Errorf("priv_validator_key.json not found in secret")
 	}
-	
+
 	// Return the entire priv_validator_key.json content
 	return string(privKeyData), nil
 }

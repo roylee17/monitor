@@ -12,9 +12,9 @@ import (
 
 	"cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/interchain-security-monitor/internal/constants"
-	"github.com/cosmos/interchain-security-monitor/internal/deployment"
-	"github.com/cosmos/interchain-security-monitor/internal/retry"
+	"github.com/sourcenetwork/ics-operator/internal/constants"
+	"github.com/sourcenetwork/ics-operator/internal/deployment"
+	"github.com/sourcenetwork/ics-operator/internal/retry"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -31,10 +31,10 @@ type K8sManager struct {
 
 	// Peer discovery
 	peerDiscovery *PeerDiscovery
-	
+
 	// LoadBalancer management
 	lbManager *LoadBalancerManager
-	
+
 	// Goroutine management
 	tasks      map[string]context.CancelFunc
 	tasksMutex sync.Mutex
@@ -50,7 +50,7 @@ func NewK8sManager(baseManager *Manager, logger *slog.Logger, consumerImage, val
 
 	// Create LoadBalancer manager
 	lbManager := NewLoadBalancerManager(deployer.GetClientset(), logger)
-	
+
 	return &K8sManager{
 		Manager:         baseManager,
 		deployer:        deployer,
@@ -72,13 +72,13 @@ func (m *K8sManager) SetPeerDiscovery(pd *PeerDiscovery) {
 func (m *K8sManager) trackTask(id string, cancel context.CancelFunc) {
 	m.tasksMutex.Lock()
 	defer m.tasksMutex.Unlock()
-	
+
 	// Cancel existing task if any
 	if existing, ok := m.tasks[id]; ok {
 		m.logger.Info("Cancelling existing task", "task_id", id)
 		existing()
 	}
-	
+
 	m.tasks[id] = cancel
 }
 
@@ -86,17 +86,17 @@ func (m *K8sManager) trackTask(id string, cancel context.CancelFunc) {
 func (m *K8sManager) Close() error {
 	m.tasksMutex.Lock()
 	defer m.tasksMutex.Unlock()
-	
+
 	m.logger.Info("Closing K8sManager, cancelling background tasks", "task_count", len(m.tasks))
-	
+
 	for id, cancel := range m.tasks {
 		m.logger.Debug("Cancelling task", "task_id", id)
 		cancel()
 	}
-	
+
 	// Clear the map
 	m.tasks = make(map[string]context.CancelFunc)
-	
+
 	return nil
 }
 
@@ -137,7 +137,6 @@ func (m *K8sManager) DeployConsumer(ctx context.Context, config *ConsumerDeploym
 	return m.deployConsumerFull(ctx, config.ChainID, config.ConsumerID,
 		*config.Ports, config.Peers, config.CCVPatch, config.NodeKeyJSON, config.ConsumerKey)
 }
-
 
 // PrepareConsumerGenesis prepares the consumer genesis without deploying
 func (m *K8sManager) PrepareConsumerGenesis(ctx context.Context, chainID, consumerID string) error {
@@ -188,7 +187,6 @@ func (m *K8sManager) preparePreCCVGenesis(chainID string) error {
 
 	return nil
 }
-
 
 // ApplyCCVGenesisAndRedeploy applies CCV genesis patch and redeploys the consumer chain
 func (m *K8sManager) ApplyCCVGenesisAndRedeploy(ctx context.Context, chainID string, ccvPatch map[string]interface{}) error {
@@ -279,8 +277,6 @@ func (m *K8sManager) MonitorConsumerChainHealth(ctx context.Context, chainID str
 	}
 }
 
-
-
 // deployConsumerFull deploys a consumer chain instance with all options including consumer key
 func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID string, ports Ports, peers []string, ccvPatch map[string]interface{}, nodeKeyJSON string, consumerKey *ConsumerKeyInfo) error {
 	// Initialize deployment error tracker
@@ -311,7 +307,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		m.logger.Warn("Failed to calculate hashes for deployment", "error", err)
 		subnetdHash, genesisHash = "unknown", "unknown"
 	}
-	
+
 	// Calculate validator NodePort
 	baseNodePort, err := CalculateValidatorNodePort(chainID, validatorName)
 	if err != nil {
@@ -394,7 +390,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 	// Wait for pod to be ready and configure LoadBalancer
 	m.logger.Info("Waiting for consumer pod to be ready for LoadBalancer configuration",
 		"chain_id", chainID)
-	
+
 	// Use retry package for pod readiness check
 	retryConfig := retry.Config{
 		MaxAttempts:  12,
@@ -402,7 +398,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 		MaxDelay:     30 * time.Second,
 		Multiplier:   1.0, // Keep constant delay for pod readiness
 	}
-	
+
 	podIP, err := retry.DoWithResult(ctx, retryConfig, func() (string, error) {
 		// Get consumer chain status
 		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
@@ -424,7 +420,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 			"chain_id", chainID)
 		return "", fmt.Errorf("no ready pods found")
 	})
-	
+
 	if err != nil {
 		m.logger.Warn("Failed to get pod IP after retries",
 			"chain_id", chainID,
@@ -443,16 +439,16 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 	} else {
 		// Configure LoadBalancer for this consumer chain
 		calculatedPort := ports.P2P
-		
+
 		// Add port to LoadBalancer (critical for peer connectivity)
 		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(calculatedPort)); err != nil {
-			m.logger.Error("Failed to add port to LoadBalancer", 
+			m.logger.Error("Failed to add port to LoadBalancer",
 				"chain_id", chainID,
 				"port", calculatedPort,
 				"error", err)
 			deployErr.AddCriticalError(fmt.Errorf("LoadBalancer port configuration failed: %w", err))
 		}
-		
+
 		// Create EndpointSlice for LoadBalancer routing (critical for peer connectivity)
 		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(calculatedPort)); err != nil {
 			m.logger.Error("Failed to create EndpointSlice for LoadBalancer",
@@ -460,7 +456,7 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 				"error", err)
 			deployErr.AddCriticalError(fmt.Errorf("EndpointSlice creation failed: %w", err))
 		}
-		
+
 		m.logger.Info("LoadBalancer configured for consumer chain",
 			"chain_id", chainID,
 			"port", calculatedPort,
@@ -503,7 +499,7 @@ func (m *K8sManager) StopConsumerChain(ctx context.Context, chainID string) erro
 // RemoveConsumerChain removes all resources for a consumer chain
 func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) error {
 	m.logger.Info("Removing consumer chain", "chain_id", chainID)
-	
+
 	// Cancel any background tasks for this chain
 	m.tasksMutex.Lock()
 	taskID := fmt.Sprintf("loadbalancer-%s", chainID)
@@ -519,15 +515,15 @@ func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) er
 	if err == nil {
 		// Remove port from LoadBalancer
 		if err := m.lbManager.RemoveConsumerPort(ctx, chainID, int32(ports.P2P)); err != nil {
-			m.logger.Error("Failed to remove port from LoadBalancer", 
+			m.logger.Error("Failed to remove port from LoadBalancer",
 				"chain_id", chainID,
 				"port", ports.P2P,
 				"error", err)
 		}
-		
+
 		// Delete EndpointSlice
 		if err := m.lbManager.DeleteEndpointSlice(ctx, chainID); err != nil {
-			m.logger.Error("Failed to delete EndpointSlice", 
+			m.logger.Error("Failed to delete EndpointSlice",
 				"chain_id", chainID,
 				"error", err)
 		}
@@ -554,7 +550,6 @@ func (m *K8sManager) ConsumerDeploymentExists(ctx context.Context, chainID strin
 	namespace := m.GetNamespaceForChain(chainID)
 	return m.deployer.DeploymentExistsInNamespace(ctx, chainID, namespace)
 }
-
 
 // updateConsumerGenesisConfigMap updates the ConfigMap with CCV genesis patch
 func (m *K8sManager) updateConsumerGenesisConfigMap(ctx context.Context, chainID string, ccvPatch map[string]interface{}) error {
@@ -625,7 +620,6 @@ func (m *K8sManager) waitForDeploymentReady(ctx context.Context, chainID string)
 	}
 }
 
-
 // DeployConsumerWithDynamicPeers deploys a consumer chain with dynamically discovered peers
 func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID, consumerID string, ports Ports, ccvPatch map[string]interface{}, consumerKey *ConsumerKeyInfo, actualOptedInValidators []string) error {
 	m.logger.Info("Deploying consumer with dynamic peer discovery",
@@ -639,7 +633,7 @@ func (m *K8sManager) DeployConsumerWithDynamicPeers(ctx context.Context, chainID
 	if m.peerDiscovery != nil {
 		// Get the list of opted-in validators
 		var optedInValidators []string
-		
+
 		// First priority: Use explicitly provided validators
 		if len(actualOptedInValidators) > 0 {
 			optedInValidators = actualOptedInValidators
@@ -705,7 +699,7 @@ func (k *K8sManager) EnsureLoadBalancerReady(ctx context.Context) (string, error
 func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID, namespace string, p2pPort int) {
 	m.logger.Info("Starting background LoadBalancer configuration task",
 		"chain_id", chainID)
-	
+
 	// Retry configuration for background task
 	retryConfig := retry.Config{
 		MaxAttempts:  60, // 5 minutes total with 5s intervals
@@ -713,7 +707,7 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 		MaxDelay:     30 * time.Second,
 		Multiplier:   1.0, // Keep constant delay for background checks
 	}
-	
+
 	err := retry.Do(ctx, retryConfig, func() error {
 		// Get consumer chain status
 		status, err := m.deployer.GetConsumerChainStatus(ctx, chainID, namespace)
@@ -723,7 +717,7 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 				"error", err)
 			return err
 		}
-		
+
 		// Look for a ready pod
 		var podIP string
 		for _, pod := range status.Pods {
@@ -732,11 +726,11 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 				break
 			}
 		}
-		
+
 		if podIP == "" {
 			return fmt.Errorf("no ready pods found")
 		}
-		
+
 		// Configure LoadBalancer
 		if err := m.lbManager.AddConsumerPort(ctx, chainID, int32(p2pPort)); err != nil {
 			m.logger.Error("CRITICAL: Failed to add port to LoadBalancer",
@@ -747,7 +741,7 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 			// Return error to stop retrying and log critical failure
 			return fmt.Errorf("critical LoadBalancer error: %w", err)
 		}
-		
+
 		// Create EndpointSlice for LoadBalancer routing (using modern API)
 		if err := m.lbManager.CreateEndpointSlice(ctx, chainID, namespace, podIP, int32(p2pPort)); err != nil {
 			m.logger.Error("CRITICAL: Failed to create EndpointSlice",
@@ -757,14 +751,14 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 			// Return error to stop retrying and log critical failure
 			return fmt.Errorf("critical EndpointSlice error: %w", err)
 		}
-		
+
 		m.logger.Info("LoadBalancer configured successfully in background task",
 			"chain_id", chainID,
 			"port", p2pPort,
 			"pod_ip", podIP)
 		return nil
 	})
-	
+
 	if err != nil {
 		if ctx.Err() != nil {
 			m.logger.Info("LoadBalancer configuration cancelled",
@@ -778,4 +772,3 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 		}
 	}
 }
-

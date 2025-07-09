@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
 )
 
 // HealthMonitor monitors consumer chain health
@@ -15,7 +15,7 @@ type HealthMonitor struct {
 	logger     *slog.Logger
 	k8sManager *subnet.K8sManager
 	interval   time.Duration
-	
+
 	// Track monitored chains
 	mu         sync.RWMutex
 	monitoring map[string]context.CancelFunc // chainID -> cancel function
@@ -47,7 +47,7 @@ func (hm *HealthMonitor) StartMonitoring(chainID string) {
 
 	// Start monitoring goroutine
 	go hm.monitorChain(ctx, chainID)
-	
+
 	hm.logger.Info("Started health monitoring for consumer chain", "chain_id", chainID)
 }
 
@@ -87,7 +87,7 @@ func (hm *HealthMonitor) monitorChain(ctx context.Context, chainID string) {
 					hm.logger.Error("Consumer chain appears unhealthy",
 						"chain_id", chainID,
 						"consecutive_failures", consecutiveFailures)
-					
+
 					// Trigger recovery workflow
 					hm.triggerRecovery(chainID)
 					consecutiveFailures = 0 // Reset after recovery attempt
@@ -123,7 +123,7 @@ func (hm *HealthMonitor) checkChainHealth(ctx context.Context, chainID string) e
 
 	// Check if desired replicas match ready replicas
 	if status.ReadyReplicas < status.DesiredReplicas {
-		return fmt.Errorf("insufficient ready replicas: %d/%d", 
+		return fmt.Errorf("insufficient ready replicas: %d/%d",
 			status.ReadyReplicas, status.DesiredReplicas)
 	}
 
@@ -145,7 +145,7 @@ func (hm *HealthMonitor) triggerRecovery(chainID string) {
 	hm.logger.Info("Triggering recovery for consumer chain", "chain_id", chainID)
 
 	ctx := context.Background()
-	
+
 	// First, try to restart the deployment
 	if err := hm.k8sManager.RestartDeployment(ctx, chainID); err != nil {
 		hm.logger.Error("Failed to restart consumer chain deployment",
@@ -193,6 +193,6 @@ func (hm *HealthMonitor) StopAll() {
 		cancel()
 		hm.logger.Info("Stopped health monitoring", "chain_id", chainID)
 	}
-	
+
 	hm.monitoring = make(map[string]context.CancelFunc)
 }

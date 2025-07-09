@@ -6,9 +6,9 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
-	"github.com/cosmos/interchain-security-monitor/internal/config"
-	"github.com/cosmos/interchain-security-monitor/internal/monitor"
-	"github.com/cosmos/interchain-security-monitor/internal/selector"
+	"github.com/sourcenetwork/ics-operator/internal/config"
+	"github.com/sourcenetwork/ics-operator/internal/monitor"
+	"github.com/sourcenetwork/ics-operator/internal/selector"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

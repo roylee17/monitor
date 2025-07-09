@@ -11,10 +11,10 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/cosmos-sdk/client"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
-	"github.com/cosmos/interchain-security-monitor/internal/config"
-	"github.com/cosmos/interchain-security-monitor/internal/selector"
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
-	"github.com/cosmos/interchain-security-monitor/internal/transaction"
+	"github.com/sourcenetwork/ics-operator/internal/config"
+	"github.com/sourcenetwork/ics-operator/internal/selector"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/transaction"
 )
 
 // Service provides blockchain monitoring functionality
@@ -82,27 +82,27 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 
 	// Create K8s manager (required)
 	// Since each validator has its own cluster, namespaces are just chain IDs
-	
+
 	consumerImage := cfg.ConsumerImage
 	if consumerImage == "" {
 		consumerImage = "ics-monitor:latest" // Default image - contains all ICS binaries
 	}
-	
+
 	k8sManager, err := subnet.NewK8sManager(subnetManager, logger, consumerImage, cfg.FromKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create K8s manager: %w", err)
 	}
-	
+
 	// Setup peer discovery
 	peerDiscovery := subnet.NewPeerDiscovery(logger, cfg.FromKey)
 	logger.Info("Peer discovery configured for LoadBalancer-based discovery")
-	
+
 	// Query validator endpoints from chain registry
 	validatorRegistry := NewValidatorRegistry(logger)
-	
+
 	// Create a staking query client
 	stakingQueryClient := stakingtypes.NewQueryClient(clientCtx)
-	
+
 	endpoints, err := validatorRegistry.GetValidatorEndpoints(context.Background(), stakingQueryClient)
 	if err != nil {
 		logger.Warn("Failed to query validator endpoints from chain", "error", err)
@@ -116,17 +116,17 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 		peerDiscovery.SetValidatorEndpoints(monikerEndpoints)
 		logger.Info("Loaded validator endpoints from chain registry", "count", len(monikerEndpoints))
 	}
-	
+
 	// Multi-cluster mode configuration
 	// In multi-cluster setup, each validator runs in its own cluster
 	// and peer discovery relies on the on-chain validator registry
 	if os.Getenv("MULTI_CLUSTER_MODE") == "true" {
 		logger.Info("Multi-cluster mode enabled - using LoadBalancer-based discovery")
 	}
-	
+
 	k8sManager.SetPeerDiscovery(peerDiscovery)
-	
-	logger.Info("K8s manager created successfully with peer discovery", 
+
+	logger.Info("K8s manager created successfully with peer discovery",
 		"image", consumerImage)
 
 	// Create transaction service - always use CLI-based due to SDK keyring issues
@@ -142,7 +142,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 
 	// Create consumer registry for tracking validator-consumer mappings
 	consumerRegistry := NewConsumerRegistry(logger, clientset)
-	
+
 	// Refresh consumer registry from existing Kubernetes namespaces
 	if err := consumerRegistry.RefreshFromKubernetes(context.Background()); err != nil {
 		logger.Warn("Failed to refresh consumer registry from Kubernetes", "error", err)
@@ -150,7 +150,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 
 	// Create consumer chain updater for automatic updates
 	chainUpdater := NewConsumerChainUpdater(logger, clientset, consumerRegistry, peerDiscovery, k8sManager)
-	
+
 	// Enable hybrid updates if requested
 	if cfg.HybridPeerUpdates || os.Getenv("HYBRID_PEER_UPDATES") == "true" {
 		chainUpdater.EnableHybridUpdate(true)
@@ -166,7 +166,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	validatorUpdateHandler := NewValidatorUpdateHandler(logger, peerDiscovery, validatorRegistry, stakingQueryClient)
 	validatorUpdateHandler.SetConsumerRegistry(consumerRegistry)
 	validatorUpdateHandler.SetChainUpdater(chainUpdater)
-	
+
 	// Check if automatic updates are enabled via config or environment
 	if cfg.AutoUpdateConsumers || os.Getenv("AUTO_UPDATE_CONSUMERS") == "true" {
 		validatorUpdateHandler.EnableAutoUpdate(true)

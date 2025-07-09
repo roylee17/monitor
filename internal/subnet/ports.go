@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	
-	"github.com/cosmos/interchain-security-monitor/internal/constants"
+
+	"github.com/sourcenetwork/ics-operator/internal/constants"
 )
 
 // Port constants for deterministic allocation
@@ -72,17 +72,17 @@ func ValidatePorts(ports *Ports) error {
 		{ports.GRPC, "gRPC"},
 		{ports.GRPCWeb, "gRPC-Web"},
 	}
-	
+
 	for _, check := range portChecks {
 		if check.port < constants.MinUserPort || check.port > constants.MaxUserPort {
 			return fmt.Errorf("%s port %d is out of valid range (%d-%d)", check.name, check.port, constants.MinUserPort, constants.MaxUserPort)
 		}
-		
+
 		if reserved, service := IsPortReserved(check.port); reserved {
 			return fmt.Errorf("%s port %d conflicts with reserved port for %s", check.name, check.port, service)
 		}
 	}
-	
+
 	// Check for internal collisions
 	portSet := make(map[int]string)
 	for _, check := range portChecks {
@@ -91,7 +91,7 @@ func ValidatePorts(ports *Ports) error {
 		}
 		portSet[check.port] = check.name
 	}
-	
+
 	return nil
 }
 
@@ -99,13 +99,13 @@ func ValidatePorts(ports *Ports) error {
 func CalculatePorts(chainID string) (*Ports, error) {
 	// Calculate hash of chain ID
 	hash := sha256.Sum256([]byte(chainID))
-	
+
 	// Use first 8 bytes as uint64
 	hashNum := binary.BigEndian.Uint64(hash[:8])
-	
+
 	// Calculate offset (0-999)
 	offset := int(hashNum % MaxConsumers)
-	
+
 	// Calculate ports with deterministic formula
 	// Port = BasePort + ConsumerOffset + (offset * PortSpacing)
 	ports := &Ports{
@@ -114,12 +114,12 @@ func CalculatePorts(chainID string) (*Ports, error) {
 		GRPC:    BaseGRPCPort + ConsumerOffset + (offset * PortSpacing),
 		GRPCWeb: BaseGRPCWebPort + ConsumerOffset + (offset * PortSpacing),
 	}
-	
+
 	// Validate the calculated ports
 	if err := ValidatePorts(ports); err != nil {
 		return nil, fmt.Errorf("calculated ports for chain %s are invalid: %w", chainID, err)
 	}
-	
+
 	return ports, nil
 }
 

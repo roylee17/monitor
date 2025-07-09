@@ -85,7 +85,7 @@ helm list -A
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/cosmos/interchain-security-monitor.git
+git clone https://github.com/sourcenetwork/ics-operator.git
 cd interchain-security-monitor
 
 # 2. Build the monitor image

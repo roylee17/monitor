@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
 )
 
 // ValidatorUpdateHandler handles validator update events including P2P endpoint changes
@@ -84,14 +84,14 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 		// Convert to simple moniker->address map for peer discovery
 		monikerEndpoints := make(map[string]string)
 		var changes []string
-		
+
 		// Get current endpoints for comparison
 		currentEndpoints := h.peerDiscovery.GetValidatorEndpoints()
-		
+
 		for moniker, endpoint := range endpoints {
 			newAddr := endpoint.Address
 			monikerEndpoints[moniker] = newAddr
-			
+
 			// Check if this is a new or updated endpoint
 			if oldAddr, exists := currentEndpoints[moniker]; !exists {
 				changes = append(changes, fmt.Sprintf("%s: new endpoint %s", moniker, newAddr))
@@ -99,27 +99,27 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 				changes = append(changes, fmt.Sprintf("%s: %s -> %s", moniker, oldAddr, newAddr))
 			}
 		}
-		
+
 		// Check for removed endpoints
 		for moniker := range currentEndpoints {
 			if _, exists := monikerEndpoints[moniker]; !exists {
 				changes = append(changes, fmt.Sprintf("%s: endpoint removed", moniker))
 			}
 		}
-		
+
 		// Update peer discovery with new endpoints
 		h.peerDiscovery.SetValidatorEndpoints(monikerEndpoints)
-		
+
 		if len(changes) > 0 {
 			h.logger.Info("Validator endpoints updated after edit_validator event",
 				"total_endpoints", len(monikerEndpoints),
 				"changes", len(changes),
 				"details", changes)
-				
+
 			// Check if automatic updates are enabled
 			if h.autoUpdate && h.consumerRegistry != nil && h.chainUpdater != nil {
 				h.logger.Info("Triggering automatic consumer chain updates")
-				
+
 				// Build list of updated validators
 				var updatedValidators []UpdatedValidator
 				for moniker, newAddr := range monikerEndpoints {
@@ -131,7 +131,7 @@ func (h *ValidatorUpdateHandler) HandleEvent(ctx context.Context, event Event) e
 						})
 					}
 				}
-				
+
 				// Trigger updates in background to avoid blocking event processing
 				go func() {
 					if err := h.chainUpdater.UpdateConsumerChainsForValidators(ctx, updatedValidators); err != nil {

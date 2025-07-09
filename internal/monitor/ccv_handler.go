@@ -11,9 +11,9 @@ import (
 
 	cosmosed25519 "github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/interchain-security-monitor/internal/selector"
-	"github.com/cosmos/interchain-security-monitor/internal/subnet"
-	"github.com/cosmos/interchain-security-monitor/internal/transaction"
+	"github.com/sourcenetwork/ics-operator/internal/selector"
+	"github.com/sourcenetwork/ics-operator/internal/subnet"
+	"github.com/sourcenetwork/ics-operator/internal/transaction"
 )
 
 // CCVHandler handles CCV module events
@@ -150,10 +150,10 @@ func (h *CCVHandler) handleOptInEvent(ctx context.Context, event Event) error {
 	// Create the priv_validator_key.json structure
 	privKeyBytes := privKey.Bytes()
 	pubKeyBytes := pubKey.Bytes()
-	
+
 	// Calculate the consensus address (first 20 bytes of SHA256 of pubkey)
 	address := sdk.ConsAddress(pubKey.Address())
-	
+
 	privValidatorKey := map[string]interface{}{
 		"address": strings.ToUpper(hex.EncodeToString(address)),
 		"pub_key": map[string]interface{}{
@@ -165,7 +165,7 @@ func (h *CCVHandler) handleOptInEvent(ctx context.Context, event Event) error {
 			"value": base64.StdEncoding.EncodeToString(privKeyBytes),
 		},
 	}
-	
+
 	privValidatorKeyJSON, err := json.Marshal(privValidatorKey)
 	if err != nil {
 		return fmt.Errorf("failed to marshal priv_validator_key: %w", err)
