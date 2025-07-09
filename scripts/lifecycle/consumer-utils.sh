@@ -133,8 +133,9 @@ wait_for_tx() {
         log_info "Waiting for transaction to be included in block..."
     fi
     
-    for _ in $(seq 1 "$max_attempts"); do
-        sleep 2
+    local delay=0.5
+    for attempt in $(seq 1 "$max_attempts"); do
+        sleep $delay
         local result
         result=$(exec_on_validator "$pod" "$namespace" \
             interchain-security-pd query tx "${tx_hash}" \
@@ -144,6 +145,11 @@ wait_for_tx() {
         if [ -n "$result" ] && [ "$result" != "null" ]; then
             echo "$result"
             return 0
+        fi
+        
+        # Adaptive delay: use shorter delays for first few attempts
+        if [ "$attempt" -gt 3 ]; then
+            delay=2  # Increase delay after initial attempts
         fi
     done
     
