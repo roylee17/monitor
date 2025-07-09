@@ -27,6 +27,7 @@ type Service struct {
 	peerDiscovery     *subnet.PeerDiscovery
 	validatorRegistry *ValidatorRegistry
 	stakingClient     stakingtypes.QueryClient
+	k8sManager        *subnet.K8sManager // Store reference for cleanup
 }
 
 // NewService creates a new monitor service
@@ -162,6 +163,11 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 	consumerHandler.SetConsumerRegistry(consumerRegistry)
 	logger.Info("Using Kubernetes-enabled consumer handler", "provider_endpoints", len(cfg.ProviderEndpoints))
 
+	// Wire up validator registry to peer discovery for on-demand endpoint refresh
+	validatorRegistryAdapter := NewValidatorRegistryAdapter(validatorRegistry)
+	peerDiscovery.SetValidatorRegistry(validatorRegistryAdapter, stakingQueryClient)
+	logger.Info("Connected validator registry to peer discovery for on-demand endpoint refresh")
+
 	// Create validator update handler with automatic update capability
 	validatorUpdateHandler := NewValidatorUpdateHandler(logger, peerDiscovery, validatorRegistry, stakingQueryClient)
 	validatorUpdateHandler.SetConsumerRegistry(consumerRegistry)
@@ -192,6 +198,7 @@ func NewService(cfg config.Config, clientCtx client.Context) (*Service, error) {
 		peerDiscovery:     peerDiscovery,
 		validatorRegistry: validatorRegistry,
 		stakingClient:     stakingQueryClient,
+		k8sManager:        k8sManager,
 	}, nil
 }
 
@@ -210,6 +217,18 @@ func (s *Service) StartMonitoring() error {
 		cancel()
 	}()
 
+	// Load validator endpoints on startup
+	s.logger.Info("Loading initial validator endpoints")
+	if err := s.peerDiscovery.RefreshEndpoints(ctx); err != nil {
+		s.logger.Warn("Failed to load initial validator endpoints", "error", err)
+		// This is not fatal - endpoints can be loaded later when needed
+	} else {
+		endpoints := s.peerDiscovery.GetValidatorEndpoints()
+		s.logger.Info("Successfully loaded initial validator endpoints", 
+			"count", len(endpoints),
+			"endpoints", endpoints)
+	}
+
 	// Validator endpoint monitoring is now event-based via ValidatorUpdateHandler
 	// No need for polling since we listen to edit_validator events
 
@@ -220,5 +239,18 @@ func (s *Service) StartMonitoring() error {
 // Stop gracefully shuts down the service
 func (s *Service) Stop() error {
 	s.logger.Info("Stopping monitor service")
-	return s.monitor.Stop()
+
+	// Stop the event monitor
+	if err := s.monitor.Stop(); err != nil {
+		s.logger.Error("Error stopping monitor", "error", err)
+	}
+
+	// Close K8s manager to stop all background tasks and watchers
+	if s.k8sManager != nil {
+		if err := s.k8sManager.Close(); err != nil {
+			s.logger.Error("Error closing K8s manager", "error", err)
+		}
+	}
+
+	return nil
 }
