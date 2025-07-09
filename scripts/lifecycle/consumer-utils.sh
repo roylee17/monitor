@@ -128,7 +128,10 @@ wait_for_tx() {
     local namespace="${3:-$DEFAULT_NAMESPACE}"
     local max_attempts="${4:-10}"
     
-    log_info "Waiting for transaction to be included in block..."
+    # Only show log message if not in raw output mode
+    if [ "${RAW_OUTPUT}" != "true" ]; then
+        log_info "Waiting for transaction to be included in block..."
+    fi
     
     for _ in $(seq 1 "$max_attempts"); do
         sleep 2
