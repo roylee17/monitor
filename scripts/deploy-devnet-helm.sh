@@ -174,9 +174,13 @@ main() {
         deploy_validator "$validator"
     done
 
-    # Wait a bit for services to stabilize
-    log_info "Waiting for services to stabilize..."
-    sleep 10
+    # Wait for all pods to be ready
+    log_info "Waiting for pods to be ready..."
+    for validator in "${VALIDATORS[@]}"; do
+        local context="kind-${validator}-cluster"
+        kubectl --context "$context" -n provider wait --for=condition=ready pod -l app.kubernetes.io/component=validator --timeout=60s
+        kubectl --context "$context" -n provider wait --for=condition=ready pod -l app.kubernetes.io/component=monitor --timeout=60s
+    done
 
     # Check status
     log_info "Checking deployment status..."
