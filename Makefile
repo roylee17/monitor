@@ -35,6 +35,7 @@ VALIDATOR_COUNT := 3
 .PHONY: status status-verbose logs shell
 .PHONY: create-consumer list-consumers show-consumer remove-consumer
 .PHONY: show-consumer-genesis show-consumer-keys consumer-info consumer-logs
+.PHONY: validator-endpoints check-endpoint-sync
 
 # ============================================
 # Help
@@ -47,6 +48,7 @@ help: ## Show this help message
 	@echo "  make quick-start         # Complete setup with consumer chain (5 mins)"
 	@echo "  make deploy              # Full deployment: create clusters, build, and deploy"
 	@echo "  make status              # Check deployment status"
+	@echo "  make validator-endpoints # Show validator P2P endpoints"
 	@echo "  make create-consumer     # Create a test consumer chain"
 	@echo ""
 	@echo "Cluster Management:"
@@ -232,3 +234,11 @@ consumer-logs: ## Show consumer chain logs (CONSUMER_ID=0 CLUSTER=bob)
 	@CONSUMER_ID=$${CONSUMER_ID:-0}; \
 	CLUSTER=$${CLUSTER:-bob}; \
 	$(SCRIPTS_DIR)/monitoring/consumer-logs.sh $$CONSUMER_ID $$CLUSTER
+
+validator-endpoints: ## Show validator P2P endpoints status (MODE=summary|details|services|all VALIDATOR=alice)
+	@MODE=$${MODE:-summary}; \
+	VALIDATOR=$${VALIDATOR:-}; \
+	$(SCRIPTS_DIR)/monitoring/validator-endpoints.sh $$MODE $$VALIDATOR
+
+check-endpoint-sync: ## Check if validator endpoints are in sync (FIX=true to auto-fix)
+	@FIX_MODE=$${FIX:-false} $(SCRIPTS_DIR)/monitoring/check-endpoint-sync.sh
