@@ -50,13 +50,24 @@ source "${SCRIPT_DIR}/../utils/logging.sh"
 # Suppress sonic warnings from the Go binary
 export GODEBUG=asyncpreemptoff=1
 
-# Override log_info to include timestamp (using variables from logging.sh)
+# Define colors for portability (not defined in logging.sh)
+if [[ -t 1 ]]; then
+    # Terminal supports colors
+    export GREEN='\033[0;32m'
+    export NC='\033[0m'  # No Color
+else
+    # No color support
+    export GREEN=''
+    export NC=''
+fi
+
+# Override log_info to include timestamp
 # Use DEBUG_TIMESTAMPS=true to enable timestamps for debugging
 log_info() {
     if [ "${DEBUG_TIMESTAMPS:-false}" = "true" ]; then
-        echo -e "${COLOR_GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${COLOR_RESET} $*"
+        printf "${GREEN}[%s]${NC} %s\n" "$(date +'%Y-%m-%d %H:%M:%S')" "$*"
     else
-        echo -e "${COLOR_GREEN}[INFO]${COLOR_RESET} $*"
+        printf "${GREEN}[INFO]${NC} %s\n" "$*"
     fi
 }
 
