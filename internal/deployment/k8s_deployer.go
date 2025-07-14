@@ -96,6 +96,11 @@ func (d *K8sDeployer) GetClientset() kubernetes.Interface {
 	return d.clientset
 }
 
+// GetConfig returns the Kubernetes REST config
+func (d *K8sDeployer) GetConfig() *rest.Config {
+	return d.config
+}
+
 // UpdateConfigMap updates a ConfigMap with new data
 func (d *K8sDeployer) UpdateConfigMap(ctx context.Context, namespace, name string, data map[string]string) error {
 	// Get existing ConfigMap
@@ -170,6 +175,7 @@ type ConsumerChainConfig struct {
 // K8sDeployer manages Kubernetes deployments for consumer chains
 type K8sDeployer struct {
 	clientset *kubernetes.Clientset
+	config    *rest.Config
 	logger    *slog.Logger
 	namespace string
 }
@@ -193,6 +199,7 @@ func NewK8sDeployer(logger *slog.Logger, namespace string) (*K8sDeployer, error)
 
 	return &K8sDeployer{
 		clientset: clientset,
+		config:    config,
 		logger:    logger,
 		namespace: namespace,
 	}, nil

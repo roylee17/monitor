@@ -15,7 +15,15 @@ import (
 	"github.com/sourcenetwork/ics-operator/internal/constants"
 	"github.com/sourcenetwork/ics-operator/internal/deployment"
 	"github.com/sourcenetwork/ics-operator/internal/retry"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
 // K8sManager extends the traditional subnet manager with Kubernetes deployment capabilities
@@ -495,6 +503,19 @@ func (m *K8sManager) deployConsumerFull(ctx context.Context, chainID, consumerID
 			"peers_count", len(peers))
 	}
 
+	// Deploy Hermes relayer for this consumer chain
+	m.logger.Info("Deploying Hermes relayer for consumer chain",
+		"chain_id", chainID,
+		"namespace", namespace)
+
+	if err := m.deployHermes(ctx, chainID, namespace, ports); err != nil {
+		m.logger.Error("Failed to deploy Hermes relayer",
+			"chain_id", chainID,
+			"error", err)
+		// Non-critical error - consumer chain can run without Hermes
+		deployErr.AddError(fmt.Errorf("Hermes deployment failed: %w", err))
+	}
+
 	return nil
 }
 
@@ -545,6 +566,15 @@ func (m *K8sManager) RemoveConsumerChain(ctx context.Context, chainID string) er
 				"chain_id", chainID,
 				"error", err)
 		}
+	}
+
+	// Delete Hermes deployment and resources
+	namespace := m.GetNamespaceForChain(chainID)
+	if err := m.deleteHermesResources(ctx, chainID, namespace); err != nil {
+		m.logger.Error("Failed to delete Hermes resources",
+			"chain_id", chainID,
+			"error", err)
+		// Non-critical error - continue with cleanup
 	}
 
 	// Delete all Kubernetes resources
@@ -802,4 +832,909 @@ func (m *K8sManager) configureLoadBalancerWhenReady(ctx context.Context, chainID
 				"action", "Manual intervention required to fix LoadBalancer configuration")
 		}
 	}
+}
+
+// deployHermes deploys a Hermes relayer instance for the consumer chain
+func (m *K8sManager) deployHermes(ctx context.Context, chainID, namespace string, ports Ports) error {
+	m.logger.Info("Deploying Hermes relayer",
+		"chain_id", chainID,
+		"namespace", namespace)
+
+	// Generate Hermes configuration
+	hermesConfig, err := m.generateHermesConfig(chainID, ports)
+	if err != nil {
+		return fmt.Errorf("failed to generate Hermes config: %w", err)
+	}
+
+	// Create Hermes ConfigMap
+	if err := m.createHermesConfigMap(ctx, chainID, namespace, hermesConfig); err != nil {
+		return fmt.Errorf("failed to create Hermes ConfigMap: %w", err)
+	}
+
+	// Create Hermes Deployment
+	if err := m.createHermesDeployment(ctx, chainID, namespace); err != nil {
+		return fmt.Errorf("failed to create Hermes deployment: %w", err)
+	}
+
+	m.logger.Info("Hermes relayer deployed successfully",
+		"chain_id", chainID,
+		"namespace", namespace)
+
+	// Start background task to create CCV channel once Hermes is ready
+	taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	m.trackTask(fmt.Sprintf("ccv-channel-%s", chainID), cancel)
+
+	go func() {
+		defer cancel()
+		if err := m.createCCVChannelWhenReady(taskCtx, chainID, namespace); err != nil {
+			m.logger.Error("Failed to create CCV channel",
+				"chain_id", chainID,
+				"error", err)
+		}
+	}()
+
+	return nil
+}
+
+// generateHermesConfig generates the Hermes configuration for the consumer chain
+func (m *K8sManager) generateHermesConfig(chainID string, ports Ports) (string, error) {
+	// Consumer chain configuration using calculated ports
+	consumerRPCPort := ports.RPC
+	consumerGRPCPort := ports.GRPC
+
+	// Generate Hermes configuration
+	config := fmt.Sprintf(`[global]
+log_level = "info"
+
+[mode]
+
+[mode.clients]
+enabled = true
+refresh = true
+misbehaviour = true
+
+[mode.connections]
+enabled = false
+
+[mode.channels]
+enabled = false
+
+[mode.packets]
+enabled = true
+
+[[chains]]
+account_prefix = "cosmos"
+clock_drift = "5s"
+gas_multiplier = 1.1
+grpc_addr = "tcp://%s-validator.provider.svc.cluster.local:9090"
+id = "provider-1"
+key_name = "%s"
+max_gas = 20000000
+rpc_addr = "http://%s-validator.provider.svc.cluster.local:26657"
+rpc_timeout = "10s"
+store_prefix = "ibc"
+trusting_period = "20hours"
+event_source = { mode = 'push', url = 'ws://%s-validator.provider.svc.cluster.local:26657/websocket', batch_delay = '50ms' }
+ccv_consumer_chain = false
+
+[chains.gas_price]
+denom = "stake"
+price = 0.000
+
+[chains.trust_threshold]
+denominator = "3"
+numerator = "1"
+
+[[chains]]
+account_prefix = "consumer"
+clock_drift = "5s"
+gas_multiplier = 1.1
+grpc_addr = "tcp://%s.%s:%d"
+id = "%s"
+key_name = "%s"
+max_gas = 20000000
+rpc_addr = "http://%s.%s:%d"
+rpc_timeout = "10s"
+store_prefix = "ibc"
+trusting_period = "20hours"
+event_source = { mode = 'push', url = 'ws://%s.%s:%d/websocket', batch_delay = '50ms' }
+ccv_consumer_chain = true
+
+[chains.gas_price]
+denom = "stake"
+price = 0.000
+
+[chains.trust_threshold]
+denominator = "3"
+numerator = "1"
+`, m.validatorName, m.validatorName, m.validatorName, m.validatorName,
+		chainID, m.GetNamespaceForChain(chainID), consumerGRPCPort,
+		chainID, m.validatorName,
+		chainID, m.GetNamespaceForChain(chainID), consumerRPCPort,
+		chainID, m.GetNamespaceForChain(chainID), consumerRPCPort)
+
+	return config, nil
+}
+
+// createHermesConfigMap creates a ConfigMap for Hermes configuration
+func (m *K8sManager) createHermesConfigMap(ctx context.Context, chainID, namespace, config string) error {
+	configMapName := fmt.Sprintf("%s-hermes-config", chainID)
+
+	// Create ConfigMap with Hermes configuration
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app":                        "hermes",
+				"chain-id":                   chainID,
+				"validator":                  m.validatorName,
+				"app.kubernetes.io/name":     "hermes",
+				"app.kubernetes.io/instance": fmt.Sprintf("%s-hermes", chainID),
+			},
+		},
+		Data: map[string]string{
+			"config.toml": config,
+		},
+	}
+
+	_, err := m.deployer.GetClientset().CoreV1().ConfigMaps(namespace).Create(ctx, configMap, metav1.CreateOptions{})
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Update existing ConfigMap
+			_, err = m.deployer.GetClientset().CoreV1().ConfigMaps(namespace).Update(ctx, configMap, metav1.UpdateOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to update Hermes ConfigMap: %w", err)
+			}
+			m.logger.Info("Updated existing Hermes ConfigMap", "name", configMapName, "namespace", namespace)
+		} else {
+			return fmt.Errorf("failed to create Hermes ConfigMap: %w", err)
+		}
+	} else {
+		m.logger.Info("Created Hermes ConfigMap", "name", configMapName, "namespace", namespace)
+	}
+
+	return nil
+}
+
+// createHermesDeployment creates the Hermes deployment
+func (m *K8sManager) createHermesDeployment(ctx context.Context, chainID, namespace string) error {
+	deploymentName := fmt.Sprintf("%s-hermes", chainID)
+	configMapName := fmt.Sprintf("%s-hermes-config", chainID)
+
+	// Use the standard test mnemonic for relayer
+	relayerMnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+
+	replicas := int32(1)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app":                        "hermes",
+				"chain-id":                   chainID,
+				"validator":                  m.validatorName,
+				"app.kubernetes.io/name":     "hermes",
+				"app.kubernetes.io/instance": fmt.Sprintf("%s-hermes", chainID),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app":       "hermes",
+					"chain-id":  chainID,
+					"validator": m.validatorName,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app":       "hermes",
+						"chain-id":  chainID,
+						"validator": m.validatorName,
+					},
+				},
+				Spec: corev1.PodSpec{
+					InitContainers: []corev1.Container{
+						{
+							Name:    "init-keys",
+							Image:   "informalsystems/hermes:1.13.1",
+							Command: []string{"/bin/bash", "-c"},
+							Args: []string{fmt.Sprintf(`
+set -e
+# Create .hermes directory if it doesn't exist
+mkdir -p /home/hermes/.hermes
+
+# Copy config from ConfigMap
+cp /config/config.toml /home/hermes/.hermes/config.toml
+
+# Import keys for both chains
+echo "%s" > /tmp/mnemonic.txt
+
+# Import provider key
+hermes --config /home/hermes/.hermes/config.toml keys add --chain provider-1 --key-name %s --mnemonic-file /tmp/mnemonic.txt --overwrite
+
+# Import consumer key
+hermes --config /home/hermes/.hermes/config.toml keys add --chain %s --key-name %s --mnemonic-file /tmp/mnemonic.txt --overwrite
+
+rm /tmp/mnemonic.txt
+`, relayerMnemonic, m.validatorName, chainID, m.validatorName)},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "hermes-home",
+									MountPath: "/home/hermes/.hermes",
+								},
+								{
+									Name:      "config",
+									MountPath: "/config",
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:    "hermes",
+							Image:   "informalsystems/hermes:1.13.1",
+							Command: []string{"hermes", "start"},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "RUST_LOG",
+									Value: "info",
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "hermes-home",
+									MountPath: "/home/hermes/.hermes",
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("256Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "hermes-home",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := m.deployer.GetClientset().AppsV1().Deployments(namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			m.logger.Info("Hermes deployment already exists", "name", deploymentName, "namespace", namespace)
+		} else {
+			return fmt.Errorf("failed to create Hermes deployment: %w", err)
+		}
+	} else {
+		m.logger.Info("Created Hermes deployment", "name", deploymentName, "namespace", namespace)
+	}
+
+	return nil
+}
+
+// createCCVChannelWhenReady waits for Hermes to be ready and creates the CCV channel
+func (m *K8sManager) createCCVChannelWhenReady(ctx context.Context, chainID, namespace string) error {
+	m.logger.Info("Starting CCV channel creation process",
+		"chain_id", chainID,
+		"namespace", namespace)
+
+	// Wait for Hermes pod to be ready
+	hermesDeploymentName := fmt.Sprintf("%s-hermes", chainID)
+
+	// Retry configuration for waiting for Hermes to be ready
+	retryConfig := retry.Config{
+		MaxAttempts:  60, // 10 minutes with 10s interval
+		InitialDelay: 10 * time.Second,
+		MaxDelay:     10 * time.Second,
+		Multiplier:   1.0,
+	}
+
+	err := retry.Do(ctx, retryConfig, func() error {
+		// Check if Hermes deployment is ready
+		deployment, err := m.deployer.GetClientset().AppsV1().Deployments(namespace).Get(ctx, hermesDeploymentName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get Hermes deployment: %w", err)
+		}
+
+		if deployment.Status.ReadyReplicas < 1 {
+			return fmt.Errorf("Hermes deployment not ready yet")
+		}
+
+		// Get Hermes pod
+		pods, err := m.deployer.GetClientset().CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app=hermes,chain-id=%s", chainID),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to list Hermes pods: %w", err)
+		}
+
+		if len(pods.Items) == 0 {
+			return fmt.Errorf("no Hermes pods found")
+		}
+
+		// Check if pod is ready
+		pod := &pods.Items[0]
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status != corev1.ConditionTrue {
+				return fmt.Errorf("Hermes pod not ready")
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("Hermes deployment did not become ready: %w", err)
+	}
+
+	m.logger.Info("Hermes is ready, waiting before creating CCV channel",
+		"chain_id", chainID)
+
+	// Wait a bit more to ensure Hermes has fully initialized
+	select {
+	case <-time.After(30 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	// Create CCV channel
+	return m.createCCVChannel(ctx, chainID, namespace)
+}
+
+// createCCVChannel creates the CCV channel between provider and consumer chains
+func (m *K8sManager) createCCVChannel(ctx context.Context, chainID, namespace string) error {
+	m.logger.Info("Creating CCV channel with automatic client discovery",
+		"chain_id", chainID,
+		"namespace", namespace)
+
+	// Get Hermes pod name
+	pods, err := m.deployer.GetClientset().CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=hermes,chain-id=%s", chainID),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list Hermes pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no Hermes pods found")
+	}
+
+	podName := pods.Items[0].Name
+
+	// Get provider chain ID from Hermes config
+	providerChainID, err := m.getProviderChainIDFromHermes(ctx, namespace, podName)
+	if err != nil {
+		// Fall back to common default if we can't query it
+		m.logger.Warn("Failed to query provider chain ID from Hermes, using default",
+			"error", err)
+		providerChainID = "provider-1"
+	}
+
+	// Query to find the correct provider client ID for this consumer chain
+	providerClientID, err := m.queryProviderClientForConsumer(ctx, namespace, podName, chainID, providerChainID)
+	if err != nil {
+		// If we can't find the client, it might not exist yet
+		// This could happen if the consumer chain just launched
+		m.logger.Warn("Failed to find provider client ID, will try default",
+			"error", err)
+		// Try to create the client first or use a fallback
+		// For now, we'll return the error
+		return fmt.Errorf("failed to find provider client for consumer chain: %w", err)
+	}
+
+	// Query for consumer client ID on the consumer chain
+	consumerClientID, err := m.queryConsumerClientID(ctx, namespace, podName, chainID)
+	if err != nil {
+		// Default to standard client-0 if we can't query
+		m.logger.Warn("Failed to query consumer client ID, using default",
+			"error", err)
+		consumerClientID = "07-tendermint-0"
+	}
+
+	// Create connection with the correct client IDs
+	m.logger.Info("Creating IBC connection",
+		"pod", podName,
+		"consumer_client", consumerClientID,
+		"provider_client", providerClientID)
+
+	connectionCmd := []string{
+		"hermes",
+		"create", "connection",
+		"--a-chain", chainID,
+		"--a-client", consumerClientID,
+		"--b-client", providerClientID,
+	}
+
+	if err := m.execInPod(ctx, namespace, podName, "hermes", connectionCmd); err != nil {
+		// Check if connection already exists (non-fatal)
+		if !strings.Contains(err.Error(), "connection already exists") &&
+			!strings.Contains(err.Error(), "connection handshake already finished") {
+			m.logger.Warn("Failed to create connection, will try channel anyway",
+				"error", err)
+		}
+	}
+
+	// Query for the actual connection ID
+	connectionID, err := m.queryConnectionID(ctx, namespace, podName, chainID, consumerClientID)
+	if err != nil {
+		// Default to connection-0 if we can't query
+		m.logger.Warn("Failed to query connection ID, using default",
+			"error", err)
+		connectionID = "connection-0"
+	}
+
+	// Create CCV channel
+	m.logger.Info("Creating CCV channel",
+		"pod", podName,
+		"connection", connectionID)
+
+	channelCmd := []string{
+		"hermes",
+		"create", "channel",
+		"--a-chain", chainID,
+		"--a-port", "consumer",
+		"--b-port", "provider",
+		"--order", "ordered",
+		"--channel-version", "1",
+		"--a-connection", connectionID,
+	}
+
+	if err := m.execInPod(ctx, namespace, podName, "hermes", channelCmd); err != nil {
+		// Check if channel already exists
+		if !strings.Contains(err.Error(), "channel handshake already finished") {
+			return fmt.Errorf("failed to create CCV channel: %w", err)
+		}
+		m.logger.Info("CCV channel already exists",
+			"chain_id", chainID)
+	} else {
+		m.logger.Info("CCV channel created successfully",
+			"chain_id", chainID)
+	}
+
+	return nil
+}
+
+// queryProviderClientForConsumer queries the provider chain to find the IBC client ID for a consumer chain
+func (m *K8sManager) queryProviderClientForConsumer(ctx context.Context, namespace, podName, consumerChainID, providerChainID string) (string, error) {
+	m.logger.Info("Querying provider chain for consumer client",
+		"consumer_chain_id", consumerChainID,
+		"provider_chain_id", providerChainID)
+
+	// Query all clients on the provider chain
+	queryCmd := []string{
+		"hermes",
+		"query", "clients",
+		"--host-chain", providerChainID,
+	}
+
+	var stdout, stderr strings.Builder
+	if err := m.execInPodWithOutput(ctx, namespace, podName, "hermes", queryCmd, &stdout, &stderr); err != nil {
+		return "", fmt.Errorf("failed to query clients: %w", err)
+	}
+
+	// Parse the output to find clients
+	output := stdout.String()
+
+	// The output format from Hermes is not standard JSON, it's a custom format
+	// Looking for pattern like:
+	// ClientChain {
+	//     client_id: ClientId(
+	//         "07-tendermint-1",
+	//     ),
+	//     chain_id: ChainId {
+	//         id: "consumer-1-1752458708-0",
+	//         version: 0,
+	//     },
+	// }
+
+	// Find all client entries
+	lines := strings.Split(output, "\n")
+	var currentClientID string
+
+	for i, line := range lines {
+		// Look for client_id line
+		if strings.Contains(line, "client_id: ClientId(") {
+			// Extract client ID from next line or same line
+			startIdx := strings.Index(line, "ClientId(")
+			if startIdx != -1 {
+				// Look for the quoted client ID
+				for j := i; j < len(lines) && j < i+3; j++ {
+					if idx := strings.Index(lines[j], `"`); idx != -1 {
+						endIdx := strings.Index(lines[j][idx+1:], `"`)
+						if endIdx != -1 {
+							currentClientID = lines[j][idx+1 : idx+1+endIdx]
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// Look for chain_id that matches our consumer chain
+		if strings.Contains(line, "chain_id: ChainId") && currentClientID != "" {
+			// Check the following lines for the actual chain ID
+			for j := i; j < len(lines) && j < i+5; j++ {
+				if strings.Contains(lines[j], `id: "`) {
+					if strings.Contains(lines[j], consumerChainID) {
+						m.logger.Info("Found provider client for consumer chain",
+							"consumer_chain_id", consumerChainID,
+							"provider_client_id", currentClientID)
+						return currentClientID, nil
+					}
+					break
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no provider client found for consumer chain %s", consumerChainID)
+}
+
+// getProviderChainIDFromHermes queries Hermes configuration to get the provider chain ID
+func (m *K8sManager) getProviderChainIDFromHermes(ctx context.Context, namespace, podName string) (string, error) {
+	// Query Hermes for configured chains
+	queryCmd := []string{
+		"hermes",
+		"query", "chains",
+	}
+
+	var stdout, stderr strings.Builder
+	if err := m.execInPodWithOutput(ctx, namespace, podName, "hermes", queryCmd, &stdout, &stderr); err != nil {
+		return "", fmt.Errorf("failed to query chains: %w", err)
+	}
+
+	// Parse output to find provider chain
+	lines := strings.Split(stdout.String(), "\n")
+	for _, line := range lines {
+		// Look for provider chain pattern
+		if strings.Contains(line, "provider") {
+			// Extract chain ID from output
+			// Format is typically: ChainId { id: "provider-1", version: 1 }
+			if idx := strings.Index(line, `id: "`); idx != -1 {
+				startIdx := idx + 5
+				endIdx := strings.Index(line[startIdx:], `"`)
+				if endIdx != -1 {
+					chainID := line[startIdx : startIdx+endIdx]
+					if strings.Contains(chainID, "provider") {
+						m.logger.Info("Found provider chain ID from Hermes",
+							"chain_id", chainID)
+						return chainID, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("provider chain not found in Hermes configuration")
+}
+
+// queryConsumerClientID queries the consumer chain to find the IBC client ID for the provider
+func (m *K8sManager) queryConsumerClientID(ctx context.Context, namespace, podName, consumerChainID string) (string, error) {
+	// Query all clients on the consumer chain
+	queryCmd := []string{
+		"hermes",
+		"query", "clients",
+		"--host-chain", consumerChainID,
+	}
+
+	var stdout, stderr strings.Builder
+	if err := m.execInPodWithOutput(ctx, namespace, podName, "hermes", queryCmd, &stdout, &stderr); err != nil {
+		return "", fmt.Errorf("failed to query clients: %w", err)
+	}
+
+	// Parse the output to find the first client (usually the provider client)
+	lines := strings.Split(stdout.String(), "\n")
+	for i, line := range lines {
+		// Look for client_id line
+		if strings.Contains(line, "client_id: ClientId(") {
+			// Extract client ID
+			for j := i; j < len(lines) && j < i+3; j++ {
+				if idx := strings.Index(lines[j], `"`); idx != -1 {
+					endIdx := strings.Index(lines[j][idx+1:], `"`)
+					if endIdx != -1 {
+						clientID := lines[j][idx+1 : idx+1+endIdx]
+						m.logger.Info("Found consumer client ID",
+							"chain_id", consumerChainID,
+							"client_id", clientID)
+						return clientID, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no clients found on consumer chain %s", consumerChainID)
+}
+
+// queryConnectionID queries the chain to find the connection ID for a given client
+func (m *K8sManager) queryConnectionID(ctx context.Context, namespace, podName, chainID, clientID string) (string, error) {
+	// Query connections on the chain
+	queryCmd := []string{
+		"hermes",
+		"query", "connections",
+		"--chain", chainID,
+	}
+
+	var stdout, stderr strings.Builder
+	if err := m.execInPodWithOutput(ctx, namespace, podName, "hermes", queryCmd, &stdout, &stderr); err != nil {
+		return "", fmt.Errorf("failed to query connections: %w", err)
+	}
+
+	// Parse the output to find connection for our client
+	lines := strings.Split(stdout.String(), "\n")
+	var currentConnectionID string
+
+	for i, line := range lines {
+		// Look for connection_id line
+		if strings.Contains(line, "connection_id: ConnectionId(") {
+			// Extract connection ID
+			for j := i; j < len(lines) && j < i+3; j++ {
+				if idx := strings.Index(lines[j], `"`); idx != -1 {
+					endIdx := strings.Index(lines[j][idx+1:], `"`)
+					if endIdx != -1 {
+						currentConnectionID = lines[j][idx+1 : idx+1+endIdx]
+						break
+					}
+				}
+			}
+		}
+
+		// Look for client_id that matches our client
+		if strings.Contains(line, "client_id: ClientId(") && currentConnectionID != "" {
+			// Check if this connection is for our client
+			for j := i; j < len(lines) && j < i+3; j++ {
+				if strings.Contains(lines[j], clientID) {
+					m.logger.Info("Found connection ID for client",
+						"chain_id", chainID,
+						"client_id", clientID,
+						"connection_id", currentConnectionID)
+					return currentConnectionID, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no connection found for client %s on chain %s", clientID, chainID)
+}
+
+// execInPodWithOutput executes a command in a pod and captures output
+func (m *K8sManager) execInPodWithOutput(ctx context.Context, namespace, podName, containerName string, command []string, stdout, stderr *strings.Builder) error {
+	req := m.deployer.GetClientset().CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, runtime.NewParameterCodec(scheme.Scheme))
+
+	executor, err := remotecommand.NewSPDYExecutor(m.deployer.GetConfig(), "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	if err != nil {
+		return fmt.Errorf("command failed: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	// Don't treat stderr output as error if command succeeded
+	if stderr.Len() > 0 {
+		// Only log as debug since Hermes outputs info to stderr
+		m.logger.Debug("Command stderr output", "stderr", stderr.String())
+	}
+
+	return nil
+}
+
+// execInPod executes a command in a pod
+func (m *K8sManager) execInPod(ctx context.Context, namespace, podName, containerName string, command []string) error {
+	req := m.deployer.GetClientset().CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: containerName,
+			Command:   command,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, runtime.NewParameterCodec(scheme.Scheme))
+
+	executor, err := remotecommand.NewSPDYExecutor(m.deployer.GetConfig(), "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	var stdout, stderr strings.Builder
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+
+	if err != nil {
+		return fmt.Errorf("command failed: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	if stderr.Len() > 0 {
+		// Check if it's just a warning
+		stderrStr := stderr.String()
+		if strings.Contains(stderrStr, "WARN") || strings.Contains(stderrStr, "already exists") {
+			m.logger.Warn("Command completed with warnings",
+				"stdout", stdout.String(),
+				"stderr", stderrStr)
+			return nil
+		}
+		return fmt.Errorf("command error: %s", stderrStr)
+	}
+
+	m.logger.Debug("Command executed successfully",
+		"stdout", stdout.String())
+
+	return nil
+}
+
+// GetHermesStatus returns the status of the Hermes relayer for a consumer chain
+func (m *K8sManager) GetHermesStatus(ctx context.Context, chainID string) (*HermesStatus, error) {
+	namespace := m.GetNamespaceForChain(chainID)
+	deploymentName := fmt.Sprintf("%s-hermes", chainID)
+
+	// Get deployment status
+	deployment, err := m.deployer.GetClientset().AppsV1().Deployments(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return &HermesStatus{
+				ChainID: chainID,
+				Status:  "Not Deployed",
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get Hermes deployment: %w", err)
+	}
+
+	// Get pod status
+	pods, err := m.deployer.GetClientset().CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=hermes,chain-id=%s", chainID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Hermes pods: %w", err)
+	}
+
+	status := &HermesStatus{
+		ChainID:        chainID,
+		DeploymentName: deploymentName,
+		Namespace:      namespace,
+		Replicas:       int(*deployment.Spec.Replicas),
+		ReadyReplicas:  int(deployment.Status.ReadyReplicas),
+	}
+
+	// Determine overall status
+	if len(pods.Items) == 0 {
+		status.Status = "No Pods"
+	} else {
+		pod := &pods.Items[0]
+		status.PodName = pod.Name
+		status.PodPhase = string(pod.Status.Phase)
+
+		// Check if pod is ready
+		isReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady {
+				isReady = condition.Status == corev1.ConditionTrue
+				break
+			}
+		}
+
+		if isReady && deployment.Status.ReadyReplicas == *deployment.Spec.Replicas {
+			status.Status = "Running"
+		} else if pod.Status.Phase == corev1.PodPending {
+			status.Status = "Starting"
+		} else if pod.Status.Phase == corev1.PodFailed {
+			status.Status = "Failed"
+		} else {
+			status.Status = "Not Ready"
+		}
+
+		// Get recent logs (last 10 lines)
+		logOptions := &corev1.PodLogOptions{
+			Container: "hermes",
+			TailLines: int64Ptr(10),
+		}
+		req := m.deployer.GetClientset().CoreV1().Pods(namespace).GetLogs(pod.Name, logOptions)
+		logBytes, err := req.Do(ctx).Raw()
+		if err == nil {
+			status.RecentLogs = string(logBytes)
+		}
+	}
+
+	// Check if CCV channel exists by looking for channel in logs
+	if strings.Contains(status.RecentLogs, "channel-0") || strings.Contains(status.RecentLogs, "successfully created channel") {
+		status.CCVChannelCreated = true
+	}
+
+	return status, nil
+}
+
+// HermesStatus represents the status of a Hermes relayer instance
+type HermesStatus struct {
+	ChainID           string
+	Status            string
+	DeploymentName    string
+	Namespace         string
+	PodName           string
+	PodPhase          string
+	Replicas          int
+	ReadyReplicas     int
+	CCVChannelCreated bool
+	RecentLogs        string
+}
+
+// int64Ptr returns a pointer to an int64
+func int64Ptr(i int64) *int64 {
+	return &i
+}
+
+// deleteHermesResources deletes all Hermes-related resources for a consumer chain
+func (m *K8sManager) deleteHermesResources(ctx context.Context, chainID, namespace string) error {
+	m.logger.Info("Deleting Hermes resources", "chain_id", chainID, "namespace", namespace)
+
+	clientset := m.deployer.GetClientset()
+
+	// Delete Hermes deployment
+	deploymentName := fmt.Sprintf("%s-hermes", chainID)
+	if err := clientset.AppsV1().Deployments(namespace).Delete(ctx, deploymentName, metav1.DeleteOptions{}); err != nil {
+		if !errors.IsNotFound(err) {
+			m.logger.Warn("Failed to delete Hermes deployment", "name", deploymentName, "error", err)
+		}
+	} else {
+		m.logger.Info("Deleted Hermes deployment", "name", deploymentName)
+	}
+
+	// Delete Hermes ConfigMap
+	configMapName := fmt.Sprintf("%s-hermes-config", chainID)
+	if err := clientset.CoreV1().ConfigMaps(namespace).Delete(ctx, configMapName, metav1.DeleteOptions{}); err != nil {
+		if !errors.IsNotFound(err) {
+			m.logger.Warn("Failed to delete Hermes ConfigMap", "name", configMapName, "error", err)
+		}
+	} else {
+		m.logger.Info("Deleted Hermes ConfigMap", "name", configMapName)
+	}
+
+	return nil
 }
