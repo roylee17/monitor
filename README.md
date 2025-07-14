@@ -139,10 +139,10 @@ graph LR
 - **Late-Joining Validators**: Support for validators joining after chain launch
 - **Consumer Key Assignment**: Automatic handling of assigned consumer keys in genesis
 - **Hybrid Peer Updates**: RPC-based peer updates with restart fallback
+- **Hermes Integration**: Automated IBC relayer deployment and configuration
 
 ### TODO
 
-- **Hermes Integration**: Automated IBC relayer deployment and configuration
 - **Kubernetes Operator**: Turn the monitor into a Kubernetes Operator
 - **Test/Improve Cloud Deployment**: Improve deployment operator experiance
 
