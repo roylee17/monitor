@@ -36,6 +36,10 @@ BINARY="interchain-security-pd"
 ASSETS_DIR="$PROJECT_ROOT/.devnet/assets"
 KEYS_BACKUP_DIR="$PROJECT_ROOT/.devnet/keys-backup"
 
+# Docker configuration
+ICS_VERSION="${ICS_VERSION:-v7.0.1}"
+ICS_IMAGE="ghcr.io/cosmos/interchain-security:${ICS_VERSION}"
+
 # Validator names
 VALIDATORS=("alice" "bob" "charlie")
 
@@ -49,6 +53,19 @@ source "${SCRIPT_DIR}/../utils/logging.sh"
 
 # Suppress sonic warnings from the Go binary
 export GODEBUG=asyncpreemptoff=1
+
+# Docker wrapper function for binary commands
+# This function runs the binary inside a Docker container with proper volume mounts
+run_binary() {
+    # Create a temporary script to handle the command execution
+    # This avoids permission issues with direct home directory access
+    docker run --rm \
+        -v "$ASSETS_DIR:/workspace" \
+        -v "$KEYS_BACKUP_DIR:/keys-backup" \
+        -w "/workspace" \
+        "$ICS_IMAGE" \
+        "$BINARY" "$@"
+}
 
 # Define colors for portability (not defined in logging.sh)
 if [[ -t 1 ]]; then
@@ -82,6 +99,7 @@ cleanup() {
     log_info "Cleaning up assets directory..."
     rm -rf "$ASSETS_DIR"
     mkdir -p "$ASSETS_DIR"
+    mkdir -p "$KEYS_BACKUP_DIR"
 }
 
 # Generate deterministic mnemonic for each validator
@@ -169,8 +187,11 @@ init_validator() {
 
     log_info "Initializing $validator..."
 
+    # Create directory structure first
+    mkdir -p "$home_dir"
+
     # Initialize chain
-    "$BINARY" init "$validator" --chain-id "$CHAIN_ID" --home "$home_dir" 2>/dev/null
+    run_binary init "$validator" --chain-id "$CHAIN_ID" --home "/workspace/$validator"
 
     # Try to restore keys from backup, otherwise they'll be generated
     if ! restore_keys "$validator"; then
@@ -188,19 +209,27 @@ init_validator() {
 
         # Add validator account key from mnemonic with specific HD path
         # This is the account key used for transactions, different from consensus keys
-        echo "$mnemonic" | "$BINARY" keys add "$validator" \
-            --home "$home_dir" \
-            --keyring-backend test \
-            --recover \
-            --hd-path "$hd_path" \
-            --output json > "$home_dir/key_info.json" 2>&1 || {
+        # Write mnemonic to a temporary file to pass it to the container
+        echo "$mnemonic" > "$home_dir/mnemonic.tmp"
+        
+        docker run --rm \
+            -v "$ASSETS_DIR:/workspace" \
+            -v "$KEYS_BACKUP_DIR:/keys-backup" \
+            -w "/workspace" \
+            "$ICS_IMAGE" \
+            /bin/sh -c "cat /workspace/$validator/mnemonic.tmp | $BINARY keys add $validator --home /workspace/$validator --keyring-backend test --recover --hd-path \"$hd_path\" --output json" \
+            > "$home_dir/key_info.json" 2>&1 || {
+            rm -f "$home_dir/mnemonic.tmp"
             error "Failed to add validator account key for $validator. Check mnemonic format."
         }
+        
+        # Clean up temporary file
+        rm -f "$home_dir/mnemonic.tmp"
     fi
 
     # Get validator address
     local address
-    address=$("$BINARY" keys show "$validator" --home "$home_dir" --keyring-backend test -a)
+    address=$(run_binary keys show "$validator" --home "/workspace/$validator" --keyring-backend test -a)
     echo "$address" > "$home_dir/address"
 
     log_info "  Validator account address: $address"
@@ -228,16 +257,16 @@ create_provisional_genesis() {
     # Add all validator accounts to genesis
     while IFS=: read -r validator address; do
         log_info "  Adding genesis account for $validator ($address)..."
-        "$BINARY" genesis add-genesis-account "$address" "300000000000000000000$DENOM" \
-            --home "$genesis_home" \
+        run_binary genesis add-genesis-account "$address" "300000000000000000000$DENOM" \
+            --home "/workspace/alice" \
             --keyring-backend test
     done < "$ASSETS_DIR/validators.txt"
 
     # Add Hermes relayer account to genesis with funds for IBC transactions
     local HERMES_ADDRESS="cosmos1r5v5srda7xfth3hn2s26txvrcrntldjumt8mhl"
     log_info "  Adding genesis account for Hermes relayer ($HERMES_ADDRESS)..."
-    "$BINARY" genesis add-genesis-account "$HERMES_ADDRESS" "100000000000000000000$DENOM" \
-        --home "$genesis_home" \
+    run_binary genesis add-genesis-account "$HERMES_ADDRESS" "100000000000000000000$DENOM" \
+        --home "/workspace/alice" \
         --keyring-backend test
 
     # Copy provisional genesis to all validators
@@ -258,9 +287,9 @@ create_gentx() {
     log_info "Creating gentx for $validator..."
 
     # Create validator transaction
-    "$BINARY" genesis gentx "$validator" "30000000000000000000$DENOM" \
+    run_binary genesis gentx "$validator" "30000000000000000000$DENOM" \
         --chain-id "$CHAIN_ID" \
-        --home "$home_dir" \
+        --home "/workspace/$validator" \
         --keyring-backend test \
         --moniker "$validator"
 
@@ -277,10 +306,10 @@ collect_gentxs() {
     local genesis_home="$ASSETS_DIR/alice"
 
     # Collect all gentx files
-    "$BINARY" genesis collect-gentxs --home "$genesis_home"
+    run_binary genesis collect-gentxs --home "/workspace/alice"
 
     # Validate genesis
-    "$BINARY" genesis validate --home "$genesis_home"
+    run_binary genesis validate --home "/workspace/alice"
 
     log_info "Final genesis created"
 }
@@ -308,7 +337,7 @@ configure_peers() {
     for validator in "${VALIDATORS[@]}"; do
         local home_dir="$ASSETS_DIR/$validator"
         local node_id
-        node_id=$("$BINARY" tendermint show-node-id --home "$home_dir")
+        node_id=$(run_binary tendermint show-node-id --home "/workspace/$validator")
         echo "$validator:$node_id" >> "$ASSETS_DIR/node_ids.txt"
     done
 
