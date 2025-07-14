@@ -235,6 +235,15 @@ consumer-logs: ## Show consumer chain logs (CONSUMER_ID=0 CLUSTER=bob)
 	CLUSTER=$${CLUSTER:-bob}; \
 	$(SCRIPTS_DIR)/monitoring/consumer-logs.sh $$CONSUMER_ID $$CLUSTER
 
+hermes-status: ## Show Hermes relayer status (CHAIN_ID=testchain-0)
+	@CHAIN_ID=$${CHAIN_ID:-}; \
+	VERBOSE=$${VERBOSE:-}; \
+	if [ -n "$$CHAIN_ID" ]; then \
+		$(SCRIPTS_DIR)/monitoring/hermes-status.sh -c $$CHAIN_ID $${VERBOSE:+-v}; \
+	else \
+		$(SCRIPTS_DIR)/monitoring/hermes-status.sh $${VERBOSE:+-v}; \
+	fi
+
 validator-endpoints: ## Show validator P2P endpoints status (MODE=summary|details|services|all VALIDATOR=alice)
 	@MODE=$${MODE:-summary}; \
 	VALIDATOR=$${VALIDATOR:-}; \
