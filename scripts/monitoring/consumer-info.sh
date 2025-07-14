@@ -96,11 +96,25 @@ main() {
     for cluster in alice bob charlie; do
         namespace=$(find_consumer_namespace "$chain_id" "$cluster")
         if [ -n "$namespace" ]; then
-            pod_status=$(kubectl --context "kind-${cluster}-cluster" get pods -n "$namespace" \
-                --no-headers 2>/dev/null | awk '{print $3}')
-            restarts=$(kubectl --context "kind-${cluster}-cluster" get pods -n "$namespace" \
-                --no-headers 2>/dev/null | awk '{print $4}')
-            printf "  %-10s: %s (restarts: %s)\n" "$cluster" "$pod_status" "$restarts"
+            # Get pod status and restart count for the consumer deployment only
+            pod_info=$(kubectl --context "kind-${cluster}-cluster" get pods -n "$namespace" \
+                -l "app.kubernetes.io/name=consumer-chain" --no-headers 2>/dev/null | head -1)
+            if [ -n "$pod_info" ]; then
+                pod_status=$(echo "$pod_info" | awk '{print $3}')
+                restarts=$(echo "$pod_info" | awk '{print $4}')
+                printf "  %-10s: %s (restarts: %s)\n" "$cluster" "$pod_status" "$restarts"
+            else
+                # Fallback to any pod in namespace if label not found
+                pod_info=$(kubectl --context "kind-${cluster}-cluster" get pods -n "$namespace" \
+                    --no-headers 2>/dev/null | grep -v "hermes" | head -1)
+                if [ -n "$pod_info" ]; then
+                    pod_status=$(echo "$pod_info" | awk '{print $3}')
+                    restarts=$(echo "$pod_info" | awk '{print $4}')
+                    printf "  %-10s: %s (restarts: %s)\n" "$cluster" "$pod_status" "$restarts"
+                else
+                    printf "  %-10s: no pods found\n" "$cluster"
+                fi
+            fi
         else
             printf "  %-10s: not deployed\n" "$cluster"
         fi
