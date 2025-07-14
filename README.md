@@ -506,6 +506,27 @@ sequenceDiagram
     end
 ```
 
+### Monitoring Hermes Relayer Status
+
+The system provides comprehensive monitoring of Hermes relayer operations:
+
+```bash
+# Show all Hermes relayers across all consumer chains
+make hermes-status
+
+# Show specific consumer chain's Hermes status
+make hermes-status CHAIN_ID=consumer-0-xxx
+
+# Verbose output with full details
+make hermes-status CHAIN_ID=consumer-0-xxx VERBOSE=1
+```
+
+The hermes-status command shows:
+- Hermes deployment status and health
+- CCV channel connections and states
+- Client and connection IDs
+- Any errors or configuration issues
+
 ### Key Implementation Details
 
 #### 1. Deterministic Validator Selection

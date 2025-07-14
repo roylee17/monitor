@@ -131,6 +131,8 @@ make logs TARGET=validator-bob      # Validator logs
 make consumer-logs CONSUMER_ID=0    # Consumer chain logs
 make shell TARGET=alice             # Shell into validator
 make show-validator-endpoints       # Show registered validator endpoints
+make hermes-status                  # Show all Hermes relayers status
+make hermes-status CHAIN_ID=consumer-0-xxx  # Specific chain's Hermes status
 ```
 
 ### Clean Up

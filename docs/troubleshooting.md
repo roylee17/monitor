@@ -348,6 +348,33 @@ kubectl -n provider exec -it monitor -- \
 
 ## Hermes Relayer Issues
 
+### Monitoring Hermes Status
+
+Use the `hermes-status` command to quickly diagnose relayer issues:
+
+```bash
+# Check all Hermes relayers
+make hermes-status
+
+# Check specific consumer chain
+make hermes-status CHAIN_ID=consumer-0-xxx
+
+# Verbose output with full details
+make hermes-status CHAIN_ID=consumer-0-xxx VERBOSE=1
+```
+
+The status output shows:
+- Hermes deployment health and restart counts
+- CCV channel status (UNINITIALIZED, INIT, TRYOPEN, OPEN)
+- Client and connection IDs
+- Any configuration or runtime errors
+
+Common issues revealed by status:
+- Missing CCV channels (channel not created yet)
+- Wrong client IDs (using client-1 instead of client-0)
+- Connection failures (provider unreachable)
+- Key import problems (relayer key missing)
+
 ### Hermes Won't Start
 
 **Symptoms**: Hermes pod in error state or CrashLoopBackOff
@@ -382,18 +409,33 @@ kubectl -n alice-testchain-0 logs hermes -c init-keys
 
 ### CCV Channel Creation Issues
 
-**Symptoms**: "channel must be built on top of client: 07-tendermint-0"
+**Symptoms**: Previously saw errors like "channel must be built on top of client: 07-tendermint-0"
 
-**Root Cause**: CCV channels must be created manually after consumer chain launches
+**Status**: ✅ FIXED - Automated CCV channel creation now works with dynamic client discovery
 
-**Solution**:
+**How it works**:
+1. Monitor automatically discovers the correct IBC clients and connections
+2. Uses `queryProviderClientForConsumer` to find provider's client for the consumer
+3. Uses `queryConsumerClientID` to find consumer's client for the provider
+4. Creates CCV channel using discovered client/connection IDs
+5. No longer assumes hardcoded client IDs (07-tendermint-0)
+
+**Verification**:
 
 ```bash
-# Currently manual process - automated solution in progress
-# Check existing channels
+# Check if CCV channel exists
+make hermes-status CHAIN_ID=consumer-0-xxx
+
+# Or manually check channels
 kubectl -n alice-testchain-0 exec hermes -- \
   hermes query channels --chain testchain-0
 ```
+
+**If channel creation fails**:
+- Check monitor logs for "Creating CCV channel" messages
+- Verify monitor has `pods/exec` permission in RBAC
+- Ensure both consumer and provider chains are running
+- Wait 30 seconds after consumer deployment before checking
 
 ## Monitor Issues
 
